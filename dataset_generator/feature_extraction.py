@@ -1,6 +1,6 @@
 import numpy as np
 
-from nn_models.codebert_utils import get_codebert_embedding, load_codebert_model
+from neural_models.codebert_utils import get_codebert_embedding, load_codebert_model
 from repository.db.models import GraphEdgeType, GraphNodeType
 
 NODE_TYPE_MAP = {

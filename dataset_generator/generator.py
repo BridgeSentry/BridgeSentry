@@ -3,7 +3,7 @@ import numpy as np
 from torch_geometric.data import HeteroData, Dataset
 from dataset_generator.feature_extraction import NODE_TYPE_MAP, EDGE_TYPE_MAP, get_node_index_from_id, compute_node_features, compute_edge_features
 import torch
-from nn_models.codebert_utils import load_codebert_model
+from neural_models.codebert_utils import load_codebert_model
 from repository.database import DBSession
 from repository.db.models import GraphEdge, GraphNode
 from repository.db.repository import GraphEdgeRepository, GraphMappingCrossChainRepository, GraphNodeRepository

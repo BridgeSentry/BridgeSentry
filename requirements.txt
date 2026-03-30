@@ -1,3 +1,5 @@
+# Recommended Python version: 3.14
+
 torch==2.10.0
 torchvision
 --find-links https://download.pytorch.org/whl/cu126
