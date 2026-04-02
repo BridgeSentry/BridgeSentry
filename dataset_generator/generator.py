@@ -1,10 +1,12 @@
 import numpy as np
 
 from torch_geometric.data import HeteroData, Dataset
-from dataset_generator.feature_extraction import NODE_TYPE_MAP, EDGE_TYPE_MAP, get_node_index_from_id, compute_node_features, compute_edge_features
+from dataset_generator.feature_extraction import NODE_TYPE_MAP, EDGE_TYPE_MAP, compute_node_features_type, encode_graph_label, get_node_index_from_id
 import torch
+from dataset_generator.visualizer import visualize_graph
 from neural_models.codebert_utils import load_codebert_model
 from repository.database import DBSession
+from repository.db.graph_label import GraphNodeType
 from repository.db.models import GraphEdge, GraphNode
 from repository.db.repository import GraphEdgeRepository, GraphMappingCrossChainRepository, GraphNodeRepository
 from utils.utils import CustomException, load_module
@@ -14,9 +16,9 @@ import os
 class GraphDatasetGenerator:
     CLASS_NAME = "GraphDatasetGenerator"
     
-    def __init__(self, bridges, output_file):
+    def __init__(self, bridges, output_folder):
         self.bridges = bridges
-        self.output_file = output_file
+        self.output_folder = output_folder
         self.load_db_modules()
         self.load_repositories()
 
@@ -39,8 +41,7 @@ class GraphDatasetGenerator:
         self.graph_edges_repo = GraphEdgeRepository(DBSession)
 
     def generate_graph_dataset(self):
-        storage_folder = os.path.join(os.path.dirname(__file__), "data")
-        dataset = Dataset(root=storage_folder)
+        storage_folder = os.path.abspath(self.output_folder)
 
         # Load the graphs in batches to avoid memory issues
         batch_size = 50
@@ -56,23 +57,26 @@ class GraphDatasetGenerator:
             for cctx in cctx_mappings:
                 nodes = self.graph_nodes_repo.get_by_cctx_graph_id(cctx.cctx_graph_id)
                 edges = self.graph_edges_repo.get_by_cctx_graph_id(cctx.cctx_graph_id)
+                label = cctx.label
 
-                graph_data = self.build_heterogeneous_graph(nodes, edges, tokenizer, model)
-                # TODO Save to the dataset
+                print([node.node_id for node in nodes])
+                print("======")
+                print([edge.edge_id for edge in edges])
+                print(f"Processing cctx_graph_id {cctx.cctx_graph_id} with label {label} - {len(nodes)} nodes, {len(edges)} edges")
 
-            # Get all nodes and edges for the batch of graphs and compute features
-            nodes = self.session.query(GraphNode).filter(GraphNode.cctx_graph_id.in_([cctx.cctx_graph_id for cctx in cctx_mappings])).all()
-            edges = self.session.query(GraphEdge).filter(GraphEdge.cctx_graph_id.in_([cctx.cctx_graph_id for cctx in cctx_mappings])).all()
+                graph_data = self.build_heterogeneous_graph(nodes, edges, tokenizer, model, label)
+                print(f"Generated graph data for cctx_graph_id {cctx.cctx_graph_id} with {len(nodes)} nodes and {len(edges)} edges")
+                visualize_graph(graph_data)
 
-            node_features = compute_node_features(nodes, edges, tokenizer, model)
-            total_node_features.append(node_features)
+                # Save the raw graph data for later processing
+                torch.save(graph_data, os.path.join(storage_folder, f'{cctx.cctx_graph_id}.pt'))
 
             offset += batch_size
         
         # Combine all node features into a single array
         total_node_features = np.concatenate(total_node_features, axis=0)
 
-    def build_heterogeneous_graph(self, nodes: list[GraphNode], edges: list[GraphEdge], tokenizer, model, label=None) -> HeteroData:
+    def build_heterogeneous_graph(self, nodes: list[GraphNode], edges: list[GraphEdge], tokenizer, model, label) -> HeteroData:
         """
         Build a torch-geometric HeteroData object for a single cross-chain graph.
         nodes: list of GraphNode objects
@@ -87,12 +91,19 @@ class GraphDatasetGenerator:
         for idx, node in enumerate(nodes):
             node_type_to_indices[node.node_type].append(idx)
 
-        node_features = compute_node_features(nodes, edges, tokenizer, model)
         for ntype, indices in node_type_to_indices.items():
             if not indices:
                 continue
-            feats = torch.tensor(node_features[indices], dtype=torch.float)
+            ntype_nodes = [nodes[i] for i in indices]
+            print(ntype, [node.node_id for node in ntype_nodes])
+            node_features = compute_node_features_type(ntype_nodes, edges, tokenizer, model, ntype)
+
+            feats = torch.tensor(node_features, dtype=torch.float)
+            print(feats.shape)
+            print(f"{ntype} node features:")
+            print(feats)
             data[ntype].x = feats
+        exit(0)
 
         # 2. Edge indices and features by type
         edge_types_to_indices = {}
@@ -124,6 +135,6 @@ class GraphDatasetGenerator:
 
         # 3. Graph-level label
         if label is not None:
-            data['label'] = torch.tensor([label], dtype=torch.long)
+            data['label'] = torch.tensor([encode_graph_label(label)], dtype=torch.long)
 
         return data

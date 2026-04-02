@@ -8,6 +8,18 @@ class CrossChainDataset(Dataset):
         root_dir = os.path.join(os.path.dirname(__file__), "data")
         super().__init__(root_dir, transform, pre_transform, pre_filter)
     
+    @property
+    def raw_file_names(self):
+        return [f for f in os.listdir(self.raw_dir) if f.endswith('.pt')]
+    
+    @property
+    def processed_file_names(self):
+        return [f for f in os.listdir(self.processed_dir) if f.endswith('.pt')]
+
+    def download(self):
+        """No downloading needed since we will generate the dataset from the database."""
+        pass
+
     def saveGraph(self, graph_data: HeteroData, cctx_graph_id):
         torch.save(graph_data, os.path.join(self.raw_dir, f'{cctx_graph_id}.pt'))
 

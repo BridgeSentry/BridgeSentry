@@ -10,10 +10,10 @@ class Cli:
 
     def generate_graph_dataset(args):
         bridges = [get_enum_instance(Bridge, bridge) for bridge in args.bridge] if args.bridge else list(Bridge)
-        output_file = args.out
+        output_folder = args.out
 
         # Create generator file
-        generator = GraphDatasetGenerator(bridges, output_file)
+        generator = GraphDatasetGenerator(bridges, output_folder)
         generator.generate_graph_dataset()
 
     def cli():

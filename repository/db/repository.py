@@ -1,11 +1,11 @@
 from repository.base import BaseRepository
+from .graph_label import GraphNodeType
 
 from .models import (
     GraphEdge,
     GraphMappingBlockchain,
     GraphMappingCrossChain,
     GraphNode,
-    GraphNodeType,
 )
 
 

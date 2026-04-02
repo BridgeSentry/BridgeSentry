@@ -1,7 +1,8 @@
 import numpy as np
 
 from neural_models.codebert_utils import get_codebert_embedding, load_codebert_model
-from repository.db.models import GraphEdgeType, GraphNodeType
+from repository.db.graph_label import BlockchainType, GraphEdgeType, GraphNodeType
+from repository.db.models import GraphLabel
 
 NODE_TYPE_MAP = {
     GraphNodeType.USER.value: 0,
@@ -37,6 +38,19 @@ BLOCKCHAIN_MAP = {
     "unichain": 13,
 }
 
+BLOCKCHAIN_TYPE_MAP = {
+    BlockchainType.SOURCE.value: 0,
+    BlockchainType.DESTINATION.value: 1,
+    BlockchainType.OFFCHAIN.value: 2,
+}
+
+LABEL_MAP = {
+    GraphLabel.NORMAL.value: 0,
+    GraphLabel.ANOMALY_SOURCE.value: 1,
+    GraphLabel.ANOMALY_OFFCHAIN.value: 2,
+    GraphLabel.ANOMALY_DESTINATION.value: 3,
+}
+
 def encode_node_types(nodes):
     # Using -1 for unknown node types
     return np.array([NODE_TYPE_MAP.get(node.node_type, -1) for node in nodes], dtype=int).reshape(-1, 1)
@@ -55,13 +69,32 @@ def encode_blockchains(objects):
     # Using 0 for unknown/none blockchains
     return np.array([BLOCKCHAIN_MAP.get(obj.blockchain, 0) for obj in objects], dtype=int).reshape(-1, 1)
 
-def compute_node_degrees(nodes, edges):
-    num_nodes = len(nodes)
+def encode_blockchain_types(objects):
+    # Use 0 for source, 1 for destination, 2 for offchain, and -1 for unknown/none
+    return np.array([BLOCKCHAIN_TYPE_MAP.get(obj.blockchain_type, -1) for obj in objects], dtype=int).reshape(-1, 1)
+
+def encode_blockchains_from_attributes(nodes, key='blockchain'):
+    return np.array([BLOCKCHAIN_MAP.get(node.attributes.get(key, None), 0) for node in nodes], dtype=int).reshape(-1, 1)
+
+def encode_amounts(nodes):
+    return np.array([float(node.amount) if node.amount is not None else -1.0 for node in nodes], dtype=np.float32).reshape(-1, 1)
+
+def encode_graph_label(label):
+    res = LABEL_MAP.get(label)
+    if res is None:
+        raise ValueError(f"Unknown graph label: {label}")
+    return res
+
+def compute_node_degrees(ntype_nodes, edges):
+    num_nodes = len(ntype_nodes)
     in_deg = np.zeros(num_nodes, dtype=int)
     out_deg = np.zeros(num_nodes, dtype=int)
     for edge in edges:
-        out_deg[get_node_index_from_id(nodes, edge.source_id)] += 1
-        in_deg[get_node_index_from_id(nodes, edge.target_id)] += 1
+        if edge.source_id in [node.node_id for node in ntype_nodes]:
+            out_deg[get_node_index_from_id(ntype_nodes, edge.source_id)] += 1
+        if edge.target_id in [node.node_id for node in ntype_nodes]:
+            in_deg[get_node_index_from_id(ntype_nodes, edge.target_id)] += 1
+
     return in_deg.reshape(-1, 1), out_deg.reshape(-1, 1)
 
 def get_node_index_from_id(nodes, node_id):
@@ -70,20 +103,25 @@ def get_node_index_from_id(nodes, node_id):
             return i
     raise ValueError(f"Node ID {node_id} not found in nodes list")
 
-def compute_node_features(nodes, edges, tokenizer, model):
-    in_deg, out_deg = compute_node_degrees(nodes, edges)
-    node_types_encoded = encode_node_types(nodes)
-    node_blockchains_encoded = encode_blockchains(nodes)
+def compute_node_features_type(ntype_nodes, edges, tokenizer, model, ntype):
+    in_deg, out_deg = compute_node_degrees(ntype_nodes, edges)
+    feature_elements = [in_deg, out_deg]
 
-    codebert_embeddings = np.zeros((len(nodes), 768), dtype=np.float32)
-    for i, node in enumerate(nodes):        
-        attributes_text = node.attributes_text if node.attributes_text else None
-        codebert_embeddings[i] = get_codebert_embedding(attributes_text, tokenizer, model)
+    if ntype not in [GraphNodeType.VALIDATOR.value]:
+        # In order to prevent 
+        feature_elements.append(encode_blockchain_types(ntype_nodes))
+    else:
+        feature_elements.append(encode_blockchains_from_attributes(ntype_nodes, key="source_chain"))
+        feature_elements.append(encode_blockchains_from_attributes(ntype_nodes, key="target_chain"))
+    
+    if ntype == GraphNodeType.LOG_EVENT.value:
+        feature_elements.append(encode_amounts(ntype_nodes))
 
-    features = np.concatenate((node_types_encoded, node_blockchains_encoded, codebert_embeddings, in_deg, out_deg), axis=1)
-    return features
+    if ntype in [GraphNodeType.LOG_EVENT.value, GraphNodeType.TOKEN.value]:
+        codebert_embeddings = np.zeros((len(ntype_nodes), 768), dtype=np.float32)
+        for i, node in enumerate(ntype_nodes):        
+            attributes_text = node.attributes_text if node.attributes_text else None
+            codebert_embeddings[i] = get_codebert_embedding(attributes_text, tokenizer, model)
+        feature_elements.append(codebert_embeddings)
 
-def compute_edge_features(edges):
-    edge_types_encoded = encode_edge_types(edges)
-    blockchain_encoded = encode_blockchains(edges)
-    return np.concatenate((edge_types_encoded, blockchain_encoded), axis=1)
+    return np.concatenate(feature_elements, axis=1)
