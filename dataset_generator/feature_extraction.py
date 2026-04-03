@@ -1,6 +1,6 @@
 import numpy as np
 
-from neural_models.codebert_utils import get_codebert_embedding, load_codebert_model
+from neural_models.codebert_utils import get_codebert_embedding
 from repository.db.graph_label import BlockchainType, GraphEdgeType, GraphNodeType
 from repository.db.models import GraphLabel
 
@@ -73,6 +73,9 @@ def encode_blockchain_types(objects):
     # Use 0 for source, 1 for destination, 2 for offchain, and -1 for unknown/none
     return np.array([BLOCKCHAIN_TYPE_MAP.get(obj.blockchain_type, -1) for obj in objects], dtype=int).reshape(-1, 1)
 
+def encode_event_orders(nodes):
+    return np.array([node.event_order if node.event_order is not None else -1 for node in nodes], dtype=int).reshape(-1, 1)
+
 def encode_blockchains_from_attributes(nodes, key='blockchain'):
     return np.array([BLOCKCHAIN_MAP.get(node.attributes.get(key, None), 0) for node in nodes], dtype=int).reshape(-1, 1)
 
@@ -107,15 +110,18 @@ def compute_node_features_type(ntype_nodes, edges, tokenizer, model, ntype):
     in_deg, out_deg = compute_node_degrees(ntype_nodes, edges)
     feature_elements = [in_deg, out_deg]
 
-    if ntype not in [GraphNodeType.VALIDATOR.value]:
-        # In order to prevent 
-        feature_elements.append(encode_blockchain_types(ntype_nodes))
-    else:
+    if ntype in [GraphNodeType.VALIDATOR.value]:
+        # Encode the blockchain of origin and destination for validator nodes
         feature_elements.append(encode_blockchains_from_attributes(ntype_nodes, key="source_chain"))
         feature_elements.append(encode_blockchains_from_attributes(ntype_nodes, key="target_chain"))
+    else:
+        # Encode the blockchain ID for other node types, as well as if it's a source or destination
+        feature_elements.append(encode_blockchains(ntype_nodes))
+        feature_elements.append(encode_blockchain_types(ntype_nodes))
     
     if ntype == GraphNodeType.LOG_EVENT.value:
         feature_elements.append(encode_amounts(ntype_nodes))
+        feature_elements.append(encode_event_orders(ntype_nodes))
 
     if ntype in [GraphNodeType.LOG_EVENT.value, GraphNodeType.TOKEN.value]:
         codebert_embeddings = np.zeros((len(ntype_nodes), 768), dtype=np.float32)

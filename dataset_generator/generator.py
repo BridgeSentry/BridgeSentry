@@ -1,12 +1,11 @@
 import numpy as np
 
-from torch_geometric.data import HeteroData, Dataset
+from torch_geometric.data import HeteroData
 from dataset_generator.feature_extraction import NODE_TYPE_MAP, EDGE_TYPE_MAP, compute_node_features_type, encode_graph_label, get_node_index_from_id
 import torch
 from dataset_generator.visualizer import visualize_graph
 from neural_models.codebert_utils import load_codebert_model
 from repository.database import DBSession
-from repository.db.graph_label import GraphNodeType
 from repository.db.models import GraphEdge, GraphNode
 from repository.db.repository import GraphEdgeRepository, GraphMappingCrossChainRepository, GraphNodeRepository
 from utils.utils import CustomException, load_module
