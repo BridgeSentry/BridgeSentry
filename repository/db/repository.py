@@ -1,3 +1,5 @@
+from sqlalchemy import func, or_
+
 from repository.base import BaseRepository
 from .graph_label import GraphNodeType
 
@@ -90,6 +92,24 @@ class GraphNodeRepository(BaseRepository):
     def get_router_node_by_graph_id(self, graph_id: int):
         with self.get_session() as session:
             return session.query(GraphNode).filter(GraphNode.chain_graph_id == graph_id, GraphNode.node_type == GraphNodeType.ROUTER.value).first()
+
+    def get_max_in_degree_excluding_non_normal_cross_chain(self):
+        with self.get_session() as session:
+            max_in_degree = (
+                session.query(func.max(GraphNode.in_degree))
+                .outerjoin(
+                    GraphMappingCrossChain,
+                    GraphNode.cctx_graph_id == GraphMappingCrossChain.cctx_graph_id,
+                )
+                .filter(
+                    or_(
+                        GraphNode.cctx_graph_id.is_(None),
+                        GraphMappingCrossChain.label == "normal",
+                    )
+                )
+                .scalar()
+            )
+            return max_in_degree or 0    
 
 class GraphEdgeRepository(BaseRepository):
     def __init__(self, session_factory):

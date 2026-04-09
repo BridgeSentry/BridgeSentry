@@ -1,8 +1,10 @@
 import numpy as np
 
 from neural_models.codebert_utils import get_codebert_embedding
+from repository.database import DBSession
 from repository.db.graph_label import BlockchainType, GraphEdgeType, GraphNodeType
 from repository.db.models import GraphLabel
+from repository.db.repository import GraphNodeRepository
 
 NODE_TYPE_MAP = {
     GraphNodeType.USER.value: 0,
@@ -65,13 +67,24 @@ def encode_edge_types(edges):
     return np.array([encode_edge_type(edge.edge_type) for edge in edges], dtype=int).reshape(-1, 1)
 
 def encode_blockchains(objects):
-    # Onjects can be either nodes or edges, both have a 'blockchain' attribute.
-    # Using 0 for unknown/none blockchains
-    return np.array([BLOCKCHAIN_MAP.get(obj.blockchain, 0) for obj in objects], dtype=int).reshape(-1, 1)
+    # Use a one-hot encoding for blockchains 
+    # (this is possible since we have a fixed set of blockchains in our dataset)
+    return np.array([
+        [1 if obj.blockchain == bc else 0 for bc in BLOCKCHAIN_MAP.keys()]
+        for obj in objects], dtype=int)
+
+def encode_src_dst_blockchains(nodes):
+    # TODO
+    pass
 
 def encode_blockchain_types(objects):
+    # Use a one-hot encoding for source/destination/offchain
+    return np.array([
+        [1 if obj.blockchain_type == b_type else 0 for b_type in BLOCKCHAIN_TYPE_MAP.keys()]
+        for obj in objects], dtype=int)
+
     # Use 0 for source, 1 for destination, 2 for offchain, and -1 for unknown/none
-    return np.array([BLOCKCHAIN_TYPE_MAP.get(obj.blockchain_type, -1) for obj in objects], dtype=int).reshape(-1, 1)
+    #return np.array([BLOCKCHAIN_TYPE_MAP.get(obj.blockchain_type, -1) for obj in objects], dtype=int).reshape(-1, 1)
 
 def encode_event_orders(nodes):
     return np.array([node.event_order if node.event_order is not None else -1 for node in nodes], dtype=int).reshape(-1, 1)
@@ -87,6 +100,14 @@ def encode_graph_label(label):
     if res is None:
         raise ValueError(f"Unknown graph label: {label}")
     return res
+
+def compute_normalized_degrees(ntype_nodes, edges):
+    node_repo = GraphNodeRepository(DBSession)
+    max_in_deg = node_repo.get_max_in_degree_excluding_non_normal_cross_chain()
+    max_out_deg = node_repo.get_max_out_degree_excluding_non_normal_cross_chain()
+
+    return np.array([node.in_degree / max_in_deg if max_in_deg > 0 else 0 for node in ntype_nodes], dtype=np.float32).reshape(-1, 1), \
+           np.array([node.out_degree / max_out_deg if max_out_deg > 0 else 0 for node in ntype_nodes], dtype=np.float32).reshape(-1, 1)
 
 def compute_node_degrees(ntype_nodes, edges):
     num_nodes = len(ntype_nodes)
@@ -106,7 +127,90 @@ def get_node_index_from_id(nodes, node_id):
             return i
     raise ValueError(f"Node ID {node_id} not found in nodes list")
 
+def compute_cobebert_embeddings(nodes, tokenizer, model):
+    embeddings = np.zeros((len(nodes), 768), dtype=np.float32)
+    for i, node in enumerate(nodes):
+        attributes_text = node.attributes_text if node.attributes_text else None
+        embeddings[i] = get_codebert_embedding(attributes_text, tokenizer, model)
+    return embeddings
+
+def compute_user_node_features(user_nodes, edges, tokenizer, model):
+    in_deg, out_deg = compute_normalized_degrees(user_nodes, edges)
+    feature_elements = [in_deg, out_deg]
+
+    feature_elements.append(encode_blockchain_types(user_nodes))
+    feature_elements.append(encode_blockchains(user_nodes))
+
+    return np.concatenate(feature_elements, axis=1)
+
+def compute_router_node_features(router_nodes, edges, tokenizer, model):
+    in_deg, out_deg = compute_normalized_degrees(router_nodes, edges)
+    feature_elements = [in_deg, out_deg]
+
+    feature_elements.append(encode_blockchain_types(router_nodes))
+    feature_elements.append(encode_blockchains(router_nodes))
+
+    return np.concatenate(feature_elements, axis=1)
+
+def compute_token_node_features(token_nodes, edges, tokenizer, model):
+    in_deg, out_deg = compute_normalized_degrees(token_nodes, edges)
+    feature_elements = [in_deg, out_deg]
+
+    feature_elements.append(encode_blockchain_types(token_nodes))
+    feature_elements.append(encode_blockchains(token_nodes))
+
+    # Add CodeBERT embeddings of the token attributes text
+    feature_elements.append(compute_cobebert_embeddings(token_nodes, tokenizer, model))
+
+    return np.concatenate(feature_elements, axis=1)
+
+def compute_other_account_node_features(other_account_nodes, edges, tokenizer, model):
+    in_deg, out_deg = compute_normalized_degrees(other_account_nodes, edges)
+    feature_elements = [in_deg, out_deg]
+
+    feature_elements.append(encode_blockchain_types(other_account_nodes))
+    feature_elements.append(encode_blockchains(other_account_nodes))
+
+    return np.concatenate(feature_elements, axis=1)
+
+def compute_log_event_node_features(log_event_nodes, edges, tokenizer, model):
+    in_deg, out_deg = compute_normalized_degrees(log_event_nodes, edges)
+    feature_elements = [in_deg, out_deg]
+
+    feature_elements.append(encode_blockchain_types(log_event_nodes))
+    feature_elements.append(encode_blockchains(log_event_nodes))
+
+    feature_elements.append(encode_event_orders(log_event_nodes))
+    feature_elements.append(encode_amounts(log_event_nodes))
+
+    feature_elements.append(compute_cobebert_embeddings(log_event_nodes, tokenizer, model))
+    return np.concatenate(feature_elements, axis=1)
+
+def compute_validator_node_features(validator_nodes, edges, tokenizer, model):
+    in_deg, out_deg = compute_normalized_degrees(validator_nodes, edges)
+    feature_elements = [in_deg, out_deg]
+
+    feature_elements.append(encode_blockchains_from_attributes(validator_nodes, key="source_chain"))
+    feature_elements.append(encode_blockchains_from_attributes(validator_nodes, key="target_chain"))
+
+    return np.concatenate(feature_elements, axis=1)    
+
 def compute_node_features_type(ntype_nodes, edges, tokenizer, model, ntype):
+    if ntype == GraphNodeType.USER.value:
+        return compute_user_node_features(ntype_nodes, edges, tokenizer, model)
+    elif ntype == GraphNodeType.ROUTER.value:
+        return compute_router_node_features(ntype_nodes, edges, tokenizer, model)
+    elif ntype == GraphNodeType.TOKEN.value:
+        return compute_token_node_features(ntype_nodes, edges, tokenizer, model)
+    elif ntype == GraphNodeType.OTHER_ACCOUNT.value:
+        return compute_other_account_node_features(ntype_nodes, edges, tokenizer, model)
+    elif ntype == GraphNodeType.LOG_EVENT.value:
+        return compute_log_event_node_features(ntype_nodes, edges, tokenizer, model)
+    elif ntype == GraphNodeType.VALIDATOR.value:
+        return compute_validator_node_features(ntype_nodes, edges, tokenizer, model)
+    else:
+        raise ValueError(f"Unknown node type: {ntype}")
+
     in_deg, out_deg = compute_node_degrees(ntype_nodes, edges)
     feature_elements = [in_deg, out_deg]
 
