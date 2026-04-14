@@ -1,40 +1,177 @@
-import os
+from typing import Callable, Optional
 
+import numpy as np
+import pandas as pd
 import torch
-from torch_geometric.data import Dataset, HeteroData
+import csv
+import os
+from torch_geometric.data import InMemoryDataset, HeteroData
 
-class CrossChainDataset(Dataset):
-    def __init__(self, transform=None, pre_transform=None, pre_filter=None):
-        root_dir = os.path.join(os.path.dirname(__file__), "data")
-        super().__init__(root_dir, transform, pre_transform, pre_filter)
-    
+from dataset_generator.feature_extraction import FeatureExtractor
+from repository.database import DBSession
+from repository.db.models import GraphEdge, GraphMappingBlockchain, GraphMappingCrossChain, GraphNode
+from repository.db.repository import GraphEdgeRepository, GraphMappingBlockchainRepository, GraphMappingCrossChainRepository, GraphNodeRepository
+from utils.utils import log_to_cli
+import json
+
+class CrossChainTransactionsDataset(InMemoryDataset):
+    def __init__(
+            self, 
+            root: str, 
+            split: str = 'train', 
+            transform: Optional[Callable] = None,
+            pre_transform: Optional[Callable] = None,
+            pre_filter: Optional[Callable] = None,
+            force_reload: bool = False,
+        ) -> None:
+        self.cross_chain_mapping_repo = GraphMappingCrossChainRepository(DBSession)
+        self.blockchain_mapping_repo = GraphMappingBlockchainRepository(DBSession)
+        self.graph_nodes_repo = GraphNodeRepository(DBSession)
+        self.graph_edges_repo = GraphEdgeRepository(DBSession)
+        super().__init__(root, transform)
+
     @property
     def raw_file_names(self):
-        return [f for f in os.listdir(self.raw_dir) if f.endswith('.pt')]
-    
+        return ['cross_chain_mappings.csv', 'blockchain_mappings.csv', 'graph_nodes.csv', 'graph_edges.csv']
+
     @property
     def processed_file_names(self):
         return [f for f in os.listdir(self.processed_dir) if f.endswith('.pt')]
 
+    @property
+    def data_index(self):
+        if not getattr(self, '_data_index', None):
+            self._data_index = {}
+            path = os.path.join(self.processed_dir, 'data_index.csv')
+            with open(path, 'r') as csvfile:
+                reader = csv.DictReader(csvfile)
+                for row in reader:
+                    self._data_index.append({
+                        'cctx_graph_id': row['cctx_graph_id'],
+                        'file_path': row['file_path']
+                    })
+        return self._data_index
+
+    def convert_datatype_to_csv(self, items, columns, output_file):
+        output_path = os.path.join(self.raw_dir, output_file)
+        os.makedirs(self.raw_dir, exist_ok=True)  # Ensure the raw folder exists
+        with open(output_path, "w") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(columns)  # Write header
+            for item in items:
+                row = []
+                for col in columns:
+                    value = getattr(item, col)
+                    # Serialize to JSON if the value is a dict or list
+                    if isinstance(value, (dict, list)):
+                        value = json.dumps(value)
+                    row.append(value)
+                writer.writerow(row)
+
     def download(self):
-        """No downloading needed since we will generate the dataset from the database."""
-        pass
+        log_to_cli("Exporting data from database to CSV files... ")
+        cctx_mappings = self.cross_chain_mapping_repo.get_all()
+        cctx_columns = [col.name for col in GraphMappingCrossChain.__table__.columns]
+        self.convert_datatype_to_csv(cctx_mappings, cctx_columns, "cross_chain_mappings.csv")
 
-    def saveGraph(self, graph_data: HeteroData, cctx_graph_id):
-        torch.save(graph_data, os.path.join(self.raw_dir, f'{cctx_graph_id}.pt'))
+        blockchain_tx_mappings = self.blockchain_mapping_repo.get_all()
+        blockchain_columns = [col.name for col in GraphMappingBlockchain.__table__.columns]
+        self.convert_datatype_to_csv(blockchain_tx_mappings, blockchain_columns, "blockchain_mappings.csv")
 
-    def process(self, graph_data: HeteroData, cctx_graph_id):
-        if self.pre_filter is not None and not self.pre_filter(graph_data):
-            return
+        nodes = self.graph_nodes_repo.get_all()
+        node_columns = [col.name for col in GraphNode.__table__.columns]
+        self.convert_datatype_to_csv(nodes, node_columns, "graph_nodes.csv")
+
+        edges = self.graph_edges_repo.get_all()
+        edge_columns = [col.name for col in GraphEdge.__table__.columns]
+        self.convert_datatype_to_csv(edges, edge_columns, "graph_edges.csv")
+
+    def process(self):
+        cctx_df = pd.read_csv(os.path.join(self.raw_dir, 'cross_chain_mappings.csv'))
+        nodes_df = pd.read_csv(os.path.join(self.raw_dir, 'graph_nodes.csv'))
+        edges_df = pd.read_csv(os.path.join(self.raw_dir, 'graph_edges.csv'))
         
-        if self.pre_transform is not None:
-            graph_data = self.pre_transform(graph_data)
+        feature_extractor = FeatureExtractor(nodes_df, edges_df)
 
-        torch.save(graph_data, os.path.join(self.processed_dir, f'{cctx_graph_id}.pt'))
-    
-    def len(self):
-        return len(self.processed_file_names)
-    
-    def getGraph(self, cctx_graph_id):
-        graph_path = os.path.join(self.processed_dir, f'{cctx_graph_id}.pt')
-        return torch.load(graph_path)
+        # Also create an index file to keep track of processed graphs
+        index_path = os.path.join(self.processed_dir, 'data_index.csv')
+        csvfile = open(index_path, 'w')
+        writer = csv.writer(csvfile)
+        writer.writerow(['index', 'cctx_graph_id', 'file_path'])
+
+        for index, row in cctx_df.iterrows():
+            cctx_graph_id = row['cctx_graph_id']
+
+            nodes = nodes_df[nodes_df['cctx_graph_id'] == cctx_graph_id]
+            edges = edges_df[edges_df['cctx_graph_id'] == cctx_graph_id]
+            label = row['label']
+
+            # Process and save the graph data
+            graph_file_path = os.path.join(self.processed_dir, f'{cctx_graph_id}.pt')
+            graph_data = self.process_heterogeneous_graph(nodes, edges, label, feature_extractor)
+            torch.save(graph_data, graph_file_path)
+
+            # Write to index file
+            writer.writerow([index, cctx_graph_id, graph_file_path])
+
+        csvfile.close()
+
+    def process_heterogeneous_graph(self, nodes: pd.DataFrame, edges: pd.DataFrame, label, feature_extractor) -> HeteroData:
+        graph_data = HeteroData()
+        node_id_to_local_idx_by_type = {}
+
+        # 1. Process node features by type
+        for ntype, ntype_nodes_df in nodes.groupby("node_type", sort=False):
+            ntype_nodes_df = ntype_nodes_df.reset_index(drop=True)
+            ntype_nodes = list(ntype_nodes_df.itertuples(index=False))
+            feats = torch.tensor(
+                feature_extractor.compute_node_features_type(ntype_nodes, ntype),
+                dtype=torch.float
+            )
+            graph_data[ntype].x = feats
+
+            # Each node type has its own local index space in HeteroData.
+            node_id_to_local_idx_by_type[ntype] = dict(
+                zip(ntype_nodes_df["node_id"].tolist(), ntype_nodes_df.index.tolist())
+            )
+
+        # 2. Process edges
+        if not edges.empty:
+            node_types = nodes[["node_id", "node_type"]].drop_duplicates(subset=["node_id"])
+
+            edges_with_types = edges[["source_id", "target_id", "edge_type"]].merge(
+                node_types.rename(columns={"node_id": "source_id", "node_type": "src_type"}),
+                on="source_id",
+                how="left"
+            ).merge(
+                node_types.rename(columns={"node_id": "target_id", "node_type": "dst_type"}),
+                on="target_id",
+                how="left"
+            )
+
+            # As a safety measure, remove any edges where we couldn't determine the node types
+            edges_with_types = edges_with_types.dropna(subset=["src_type", "dst_type", "edge_type"]) 
+
+            for (src_type, edge_type, dst_type), group in edges_with_types.groupby(["src_type", "edge_type", "dst_type"], sort=False):
+                src_map = node_id_to_local_idx_by_type.get(src_type)
+                dst_map = node_id_to_local_idx_by_type.get(dst_type)
+                if src_map is None or dst_map is None:
+                    continue
+
+                src_idx = group["source_id"].map(src_map)
+                dst_idx = group["target_id"].map(dst_map)
+                valid = src_idx.notna() & dst_idx.notna()
+                if not valid.any():
+                    continue
+
+                src_idx = src_idx[valid].to_numpy(dtype=np.int64)
+                dst_idx = dst_idx[valid].to_numpy(dtype=np.int64)
+
+                edge_index = torch.tensor(np.vstack((src_idx, dst_idx)), dtype=torch.long)
+
+                graph_data[(src_type, edge_type, dst_type)].edge_index = edge_index
+
+        # 3. Graph-level label
+        graph_data.y = torch.tensor([feature_extractor.encode_graph_label(label)], dtype=torch.long)
+
+        return graph_data

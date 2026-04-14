@@ -20,5 +20,8 @@ sqlalchemy_utils==0.42.1
 
 python-dotenv==1.2.2
 transformers==5.4.0
+pandas==3.0.2
+
+mmh3==5.2.1
 
 # matplotlib==3.10.8

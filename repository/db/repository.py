@@ -109,7 +109,25 @@ class GraphNodeRepository(BaseRepository):
                 )
                 .scalar()
             )
-            return max_in_degree or 0    
+            return max_in_degree or 0
+
+    def get_max_out_degree_excluding_non_normal_cross_chain(self):
+        with self.get_session() as session:
+            max_out_degree = (
+                session.query(func.max(GraphNode.out_degree))
+                .outerjoin(
+                    GraphMappingCrossChain,
+                    GraphNode.cctx_graph_id == GraphMappingCrossChain.cctx_graph_id,
+                )
+                .filter(
+                    or_(
+                        GraphNode.cctx_graph_id.is_(None),
+                        GraphMappingCrossChain.label == "normal",
+                    )
+                )
+                .scalar()
+            )
+            return max_out_degree or 0
 
 class GraphEdgeRepository(BaseRepository):
     def __init__(self, session_factory):

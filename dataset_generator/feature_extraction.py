@@ -1,10 +1,10 @@
 import numpy as np
+import mmh3
+from pandas import DataFrame
 
 from neural_models.codebert_utils import get_codebert_embedding
-from repository.database import DBSession
-from repository.db.graph_label import BlockchainType, GraphEdgeType, GraphNodeType
-from repository.db.models import GraphLabel
-from repository.db.repository import GraphNodeRepository
+from repository.db.graph_label import BlockchainType, EventType, GraphEdgeType, GraphLabel, GraphNodeType
+import json
 
 NODE_TYPE_MAP = {
     GraphNodeType.USER.value: 0,
@@ -24,26 +24,41 @@ EDGE_TYPE_MAP = {
     GraphEdgeType.CROSS_CHAIN_RELATION.value: 5,
 }
 
+# Binary encoding for blockchains
 BLOCKCHAIN_MAP = {
-    "ethereum": 1,
-    "bsc": 2,
-    "polygon": 3,
-    "avalanche": 4,
-    "arbitrum": 5,
-    "optimism": 6,
-    "solana": 7,
-    "base": 8,
-    "scroll": 9,
-    "linea": 10,
-    "gnosis": 11,
-    "ronin": 12,
-    "unichain": 13,
+    "ethereum": [0, 0, 0, 1],
+    "bsc": [0, 0, 1, 0],
+    "polygon": [0, 0, 1, 1],
+    "avalanche": [0, 1, 0, 0],
+    "arbitrum": [0, 1, 0, 1],
+    "optimism": [0, 1, 1, 0],
+    "solana": [0, 1, 1, 1],
+    "base": [1, 0, 0, 0],
+    "scroll": [1, 0, 0, 1],
+    "linea": [1, 0, 1, 0],
+    "gnosis": [1, 0, 1, 1],
+    "ronin": [1, 1, 0, 0],
+    "unichain": [1, 1, 0, 1],
 }
 
-BLOCKCHAIN_TYPE_MAP = {
+BLOCKCHAIN_STAGE_MAP = {
     BlockchainType.SOURCE.value: 0,
     BlockchainType.DESTINATION.value: 1,
     BlockchainType.OFFCHAIN.value: 2,
+}
+
+EVENT_TYPE_MAP = {
+    EventType.TRANSFER.value: [0, 0, 0, 1],
+    EventType.APPROVAL.value: [0, 0, 1, 0],
+    EventType.DEPOSIT_REQUEST.value: [0, 0, 1, 1],
+    EventType.DEPOSIT_CONFIRMATION.value: [0, 1, 0, 0],
+    EventType.WITHDRAWAL_REQUEST.value: [0, 1, 0, 1],
+    EventType.WITHDRAWAL_CONFIRMATION.value: [0, 1, 1, 0],
+    EventType.BURN.value: [0, 1, 1, 1],
+    EventType.MINT.value: [1, 0, 0, 0],
+    EventType.ROUTER_UNKNOWN.value: [1, 0, 0, 1],
+    EventType.TOKEN_UNKNOWN.value: [1, 0, 1, 0],
+    EventType.UNKNOWN.value: [0, 0, 0, 0],
 }
 
 LABEL_MAP = {
@@ -53,185 +68,194 @@ LABEL_MAP = {
     GraphLabel.ANOMALY_DESTINATION.value: 3,
 }
 
-def encode_node_types(nodes):
-    # Using -1 for unknown node types
-    return np.array([NODE_TYPE_MAP.get(node.node_type, -1) for node in nodes], dtype=int).reshape(-1, 1)
+class FeatureExtractor:
+    def __init__(self, nodes_df: DataFrame, edges_df: DataFrame):
+        self.nodes_df = nodes_df
+        self.edges_df = edges_df
 
-def encode_edge_type(edge_type: str) -> int:
-    res = EDGE_TYPE_MAP.get(edge_type)
-    if res is None:
-        raise ValueError(f"Unknown edge type: {edge_type}")
-    return res
+        self.calculate_common_stats()
+        #self.tokenizer, self.model = load_codebert_model()
 
-def encode_edge_types(edges):
-    return np.array([encode_edge_type(edge.edge_type) for edge in edges], dtype=int).reshape(-1, 1)
+    def calculate_common_stats(self):
+        self.max_in_degree = self.nodes_df['in_degree'].max()
+        self.max_out_degree = self.nodes_df['out_degree'].max()
+        #print(f"Max in degree: {self.max_in_degree}, Max out degree: {self.max_out_degree}")
 
-def encode_blockchains(objects):
-    # Use a one-hot encoding for blockchains 
-    # (this is possible since we have a fixed set of blockchains in our dataset)
-    return np.array([
-        [1 if obj.blockchain == bc else 0 for bc in BLOCKCHAIN_MAP.keys()]
-        for obj in objects], dtype=int)
 
-def encode_src_dst_blockchains(nodes):
-    # TODO
-    pass
+    # ======== Common node feature encoding methods ========
+    def compute_degrees(self, ntype_nodes: list):
+        return np.array([node.in_degree for node in ntype_nodes], dtype=np.float32).reshape(-1, 1), \
+            np.array([node.out_degree for node in ntype_nodes], dtype=np.float32).reshape(-1, 1)
 
-def encode_blockchain_types(objects):
-    # Use a one-hot encoding for source/destination/offchain
-    return np.array([
-        [1 if obj.blockchain_type == b_type else 0 for b_type in BLOCKCHAIN_TYPE_MAP.keys()]
-        for obj in objects], dtype=int)
+    def encode_node_blockchains(self, ntype_nodes: list):
+        # Use a binary encoding for blockchains, with one bit for each blockchain type
+        # (this is possible since we have a fixed set of blockchains in our dataset)
+        return np.array([BLOCKCHAIN_MAP.get(node.blockchain, [0, 0, 0, 0]) for node in ntype_nodes])
 
-    # Use 0 for source, 1 for destination, 2 for offchain, and -1 for unknown/none
-    #return np.array([BLOCKCHAIN_TYPE_MAP.get(obj.blockchain_type, -1) for obj in objects], dtype=int).reshape(-1, 1)
+    def encode_blockchain_stages(self, objects):
+        # Use a one-hot encoding for source/offchain/destination
+        return np.array([
+            [1 if obj.blockchain_type == b_type else 0 for b_type in BLOCKCHAIN_STAGE_MAP.keys()]
+            for obj in objects], dtype=int)
 
-def encode_event_orders(nodes):
-    return np.array([node.event_order if node.event_order is not None else -1 for node in nodes], dtype=int).reshape(-1, 1)
+    def compute_token_symbols(self, nodes):
+        # Use MurmurHash3 to hash the token symbol string into a fixed-size integer, and then split into a set of 8 features, normalizing each one to be between 0 and 1
+        token_symbol_features = np.zeros((len(nodes), 8), dtype=np.float32)
+        for i, node in enumerate(nodes):
+            if node.token_symbol is not None and isinstance(node.token_symbol, str):
+                hash_value = mmh3.hash(node.token_symbol, 12, signed=False) # Returns a 32-bit unsigned int
+                for j in range(8):
+                    # Extract 4 bits at a time to create 8 features, and normalize to [0, 1]
+                    token_symbol_features[i, j] = ((hash_value >> (j * 4)) & 0xF) / 15.0
+            else:
+                token_symbol_features[i] = np.zeros(8, dtype=np.float32)
 
-def encode_blockchains_from_attributes(nodes, key='blockchain'):
-    return np.array([BLOCKCHAIN_MAP.get(node.attributes.get(key, None), 0) for node in nodes], dtype=int).reshape(-1, 1)
+        return token_symbol_features
 
-def encode_amounts(nodes):
-    return np.array([float(node.amount) if node.amount is not None else -1.0 for node in nodes], dtype=np.float32).reshape(-1, 1)
+    # ======== Log-specific node feature encoding methods ========
+    def encode_event_orders(self, nodes):
+        # In this case, we will be normalizing the event order in a per-transaction basis,
+        # so the event order will be represented as a float between 0 and 1 (inclusive) in each stage
+        num_events_source = len([n for n in nodes if n.blockchain_type == BlockchainType.SOURCE.value])
+        num_events_destination = len([n for n in nodes if n.blockchain_type == BlockchainType.DESTINATION.value])
+        
+        if num_events_source == 0 and num_events_destination == 0:
+            raise ValueError("No nodes provided for encoding event orders")
+        return np.array([
+            -1 if node.event_order is None 
+            else 1 if node.blockchain_type == BlockchainType.SOURCE.value and num_events_source == 1
+            else node.event_order / (num_events_source - 1) if node.blockchain_type == BlockchainType.SOURCE.value 
+            else 1 if node.blockchain_type == BlockchainType.DESTINATION.value and num_events_destination == 1
+            else node.event_order / (num_events_destination - 1) if node.blockchain_type == BlockchainType.DESTINATION.value 
+            else 0
+            for node in nodes], dtype=np.float32).reshape(-1, 1)
 
-def encode_graph_label(label):
-    res = LABEL_MAP.get(label)
-    if res is None:
-        raise ValueError(f"Unknown graph label: {label}")
-    return res
+    def encode_event_types(self, node_attributes):
+        # Use Binary encoding for event types, with 4 bits to allow for up to 16 different event types (we currently have 11)
+        return np.array([EVENT_TYPE_MAP.get(attr.get("event_type"), [1, 0, 1, 1]) for attr in node_attributes], dtype=int)
 
-def compute_normalized_degrees(ntype_nodes, edges):
-    node_repo = GraphNodeRepository(DBSession)
-    max_in_deg = node_repo.get_max_in_degree_excluding_non_normal_cross_chain()
-    max_out_deg = node_repo.get_max_out_degree_excluding_non_normal_cross_chain()
+    def encode_args_num(self, node_attributes):
+        return np.array([attr.get("num_args", 0) for attr in node_attributes], dtype=int).reshape(-1, 1)
 
-    return np.array([node.in_degree / max_in_deg if max_in_deg > 0 else 0 for node in ntype_nodes], dtype=np.float32).reshape(-1, 1), \
-           np.array([node.out_degree / max_out_deg if max_out_deg > 0 else 0 for node in ntype_nodes], dtype=np.float32).reshape(-1, 1)
+    def encode_input_size(self, node_attributes):
+        return np.array([attr.get("input_size", 0) for attr in node_attributes], dtype=int).reshape(-1, 1)
 
-def compute_node_degrees(ntype_nodes, edges):
-    num_nodes = len(ntype_nodes)
-    in_deg = np.zeros(num_nodes, dtype=int)
-    out_deg = np.zeros(num_nodes, dtype=int)
-    for edge in edges:
-        if edge.source_id in [node.node_id for node in ntype_nodes]:
-            out_deg[get_node_index_from_id(ntype_nodes, edge.source_id)] += 1
-        if edge.target_id in [node.node_id for node in ntype_nodes]:
-            in_deg[get_node_index_from_id(ntype_nodes, edge.target_id)] += 1
+    def encode_amounts(self, nodes):
+        return np.array([float(node.amount_usd) if node.amount_usd is not None else -1.0 for node in nodes], dtype=np.float32).reshape(-1, 1)
 
-    return in_deg.reshape(-1, 1), out_deg.reshape(-1, 1)
-
-def get_node_index_from_id(nodes, node_id):
-    for i, node in enumerate(nodes):
-        if node.node_id == node_id:
-            return i
-    raise ValueError(f"Node ID {node_id} not found in nodes list")
-
-def compute_cobebert_embeddings(nodes, tokenizer, model):
-    embeddings = np.zeros((len(nodes), 768), dtype=np.float32)
-    for i, node in enumerate(nodes):
-        attributes_text = node.attributes_text if node.attributes_text else None
-        embeddings[i] = get_codebert_embedding(attributes_text, tokenizer, model)
-    return embeddings
-
-def compute_user_node_features(user_nodes, edges, tokenizer, model):
-    in_deg, out_deg = compute_normalized_degrees(user_nodes, edges)
-    feature_elements = [in_deg, out_deg]
-
-    feature_elements.append(encode_blockchain_types(user_nodes))
-    feature_elements.append(encode_blockchains(user_nodes))
-
-    return np.concatenate(feature_elements, axis=1)
-
-def compute_router_node_features(router_nodes, edges, tokenizer, model):
-    in_deg, out_deg = compute_normalized_degrees(router_nodes, edges)
-    feature_elements = [in_deg, out_deg]
-
-    feature_elements.append(encode_blockchain_types(router_nodes))
-    feature_elements.append(encode_blockchains(router_nodes))
-
-    return np.concatenate(feature_elements, axis=1)
-
-def compute_token_node_features(token_nodes, edges, tokenizer, model):
-    in_deg, out_deg = compute_normalized_degrees(token_nodes, edges)
-    feature_elements = [in_deg, out_deg]
-
-    feature_elements.append(encode_blockchain_types(token_nodes))
-    feature_elements.append(encode_blockchains(token_nodes))
-
-    # Add CodeBERT embeddings of the token attributes text
-    feature_elements.append(compute_cobebert_embeddings(token_nodes, tokenizer, model))
-
-    return np.concatenate(feature_elements, axis=1)
-
-def compute_other_account_node_features(other_account_nodes, edges, tokenizer, model):
-    in_deg, out_deg = compute_normalized_degrees(other_account_nodes, edges)
-    feature_elements = [in_deg, out_deg]
-
-    feature_elements.append(encode_blockchain_types(other_account_nodes))
-    feature_elements.append(encode_blockchains(other_account_nodes))
-
-    return np.concatenate(feature_elements, axis=1)
-
-def compute_log_event_node_features(log_event_nodes, edges, tokenizer, model):
-    in_deg, out_deg = compute_normalized_degrees(log_event_nodes, edges)
-    feature_elements = [in_deg, out_deg]
-
-    feature_elements.append(encode_blockchain_types(log_event_nodes))
-    feature_elements.append(encode_blockchains(log_event_nodes))
-
-    feature_elements.append(encode_event_orders(log_event_nodes))
-    feature_elements.append(encode_amounts(log_event_nodes))
-
-    feature_elements.append(compute_cobebert_embeddings(log_event_nodes, tokenizer, model))
-    return np.concatenate(feature_elements, axis=1)
-
-def compute_validator_node_features(validator_nodes, edges, tokenizer, model):
-    in_deg, out_deg = compute_normalized_degrees(validator_nodes, edges)
-    feature_elements = [in_deg, out_deg]
-
-    feature_elements.append(encode_blockchains_from_attributes(validator_nodes, key="source_chain"))
-    feature_elements.append(encode_blockchains_from_attributes(validator_nodes, key="target_chain"))
-
-    return np.concatenate(feature_elements, axis=1)    
-
-def compute_node_features_type(ntype_nodes, edges, tokenizer, model, ntype):
-    if ntype == GraphNodeType.USER.value:
-        return compute_user_node_features(ntype_nodes, edges, tokenizer, model)
-    elif ntype == GraphNodeType.ROUTER.value:
-        return compute_router_node_features(ntype_nodes, edges, tokenizer, model)
-    elif ntype == GraphNodeType.TOKEN.value:
-        return compute_token_node_features(ntype_nodes, edges, tokenizer, model)
-    elif ntype == GraphNodeType.OTHER_ACCOUNT.value:
-        return compute_other_account_node_features(ntype_nodes, edges, tokenizer, model)
-    elif ntype == GraphNodeType.LOG_EVENT.value:
-        return compute_log_event_node_features(ntype_nodes, edges, tokenizer, model)
-    elif ntype == GraphNodeType.VALIDATOR.value:
-        return compute_validator_node_features(ntype_nodes, edges, tokenizer, model)
-    else:
-        raise ValueError(f"Unknown node type: {ntype}")
-
-    in_deg, out_deg = compute_node_degrees(ntype_nodes, edges)
-    feature_elements = [in_deg, out_deg]
-
-    if ntype in [GraphNodeType.VALIDATOR.value]:
-        # Encode the blockchain of origin and destination for validator nodes
-        feature_elements.append(encode_blockchains_from_attributes(ntype_nodes, key="source_chain"))
-        feature_elements.append(encode_blockchains_from_attributes(ntype_nodes, key="target_chain"))
-    else:
-        # Encode the blockchain ID for other node types, as well as if it's a source or destination
-        feature_elements.append(encode_blockchains(ntype_nodes))
-        feature_elements.append(encode_blockchain_types(ntype_nodes))
+    # ======== Validator-specific node feature encoding methods ========
+    def encode_src_dst_blockchains_and_orders(self, node_attributes):
+        blockchain_src = np.array([BLOCKCHAIN_MAP.get(attr.get("source_chain"), [0, 0, 0, 0]) for attr in node_attributes], dtype=int)
+        blockchain_dst = np.array([BLOCKCHAIN_MAP.get(attr.get("target_chain"), [0, 0, 0, 0]) for attr in node_attributes], dtype=int)
+        
+        # For the order, we will be solely be considering pair-wise bridges, and depending on the timestamp order,
+        # we can have 2 possible orders: source -> destination and destination -> source.
+        # These are categorical features
+        blockchains_order = np.array([
+            [1 if attr.get("source_timestamp") < attr.get("destination_timestamp") else 0,
+            1 if attr.get("source_timestamp") > attr.get("destination_timestamp") else 0]
+            for attr in node_attributes], dtype=int)        
+        
+        return [blockchain_src, blockchain_dst, blockchains_order]
     
-    if ntype == GraphNodeType.LOG_EVENT.value:
-        feature_elements.append(encode_amounts(ntype_nodes))
-        feature_elements.append(encode_event_orders(ntype_nodes))
 
-    if ntype in [GraphNodeType.LOG_EVENT.value, GraphNodeType.TOKEN.value]:
-        codebert_embeddings = np.zeros((len(ntype_nodes), 768), dtype=np.float32)
-        for i, node in enumerate(ntype_nodes):        
+    # ======== Graph label encoding ========
+    def encode_graph_label(self, label):
+        res = LABEL_MAP.get(label)
+        if res is None:
+            raise ValueError(f"Unknown graph label: {label}")
+        return res
+
+
+    # ======== Miscellaneous (if needed in the future) ========
+    def compute_cobebert_embeddings(self, nodes, tokenizer, model):
+        embeddings = np.zeros((len(nodes), 768), dtype=np.float32)
+        for i, node in enumerate(nodes):
             attributes_text = node.attributes_text if node.attributes_text else None
-            codebert_embeddings[i] = get_codebert_embedding(attributes_text, tokenizer, model)
-        feature_elements.append(codebert_embeddings)
+            embeddings[i] = get_codebert_embedding(attributes_text, tokenizer, model)
+        return embeddings
 
-    return np.concatenate(feature_elements, axis=1)
+
+    # ======= Node feature computation methods by node type ========
+    def compute_user_node_features(self, user_nodes: list):
+        # features: [in_deg, out_deg, blockchain (binary, size 4), blockchain type (one-hot, size 3)]
+        in_deg, out_deg = self.compute_degrees(user_nodes)
+        feature_elements = [in_deg, out_deg]
+
+        feature_elements.append(self.encode_blockchain_stages(user_nodes))
+        feature_elements.append(self.encode_node_blockchains(user_nodes))
+
+        return np.concatenate(feature_elements, axis=1)
+
+    def compute_router_node_features(self, router_nodes: list):
+        in_deg, out_deg = self.compute_degrees(router_nodes)
+        feature_elements = [in_deg, out_deg]
+
+        feature_elements.append(self.encode_blockchain_stages(router_nodes))
+        feature_elements.append(self.encode_node_blockchains(router_nodes))
+
+        return np.concatenate(feature_elements, axis=1)
+
+    def compute_token_node_features(self, token_nodes: list):
+        in_deg, out_deg = self.compute_degrees(token_nodes)
+        feature_elements = [in_deg, out_deg]
+
+        feature_elements.append(self.encode_blockchain_stages(token_nodes))
+        feature_elements.append(self.encode_node_blockchains(token_nodes))
+
+        feature_elements.append(self.compute_token_symbols(token_nodes))
+        return np.concatenate(feature_elements, axis=1)
+
+    def compute_other_account_node_features(self, other_account_nodes: list):
+        in_deg, out_deg = self.compute_degrees(other_account_nodes)
+        feature_elements = [in_deg, out_deg]
+
+        feature_elements.append(self.encode_blockchain_stages(other_account_nodes))
+        feature_elements.append(self.encode_node_blockchains(other_account_nodes))
+
+        return np.concatenate(feature_elements, axis=1)
+
+    def compute_log_event_node_features(self, log_event_nodes: list):
+        attr_json = [json.loads(node.attributes) if node.attributes else {} for node in log_event_nodes]
+
+        in_deg, out_deg = self.compute_degrees(log_event_nodes)
+        feature_elements = [in_deg, out_deg]
+
+        feature_elements.append(self.encode_blockchain_stages(log_event_nodes))
+        feature_elements.append(self.encode_node_blockchains(log_event_nodes))
+
+        feature_elements.append(self.encode_event_orders(log_event_nodes))
+
+        feature_elements.append(self.encode_event_types(attr_json))
+        feature_elements.append(self.encode_args_num(attr_json))
+        feature_elements.append(self.encode_input_size(attr_json))
+
+        feature_elements.append(self.encode_amounts(log_event_nodes))
+        feature_elements.append(self.compute_token_symbols(log_event_nodes))
+        # feature_elements.append(self.compute_cobebert_embeddings(log_event_nodes, tokenizer, model)) # REMOVE THIS AS ALTERNATIVE TO THE OTHER FEATURES
+        return np.concatenate(feature_elements, axis=1)
+
+    def compute_validator_node_features(self, validator_nodes):
+        attr_json = [json.loads(node.attributes) if node.attributes else {} for node in validator_nodes]
+
+        in_deg, out_deg = self.compute_degrees(validator_nodes)
+        feature_elements = [in_deg, out_deg]
+
+        feature_elements.extend(self.encode_src_dst_blockchains_and_orders(attr_json))
+        return np.concatenate(feature_elements, axis=1)
+
+    def compute_node_features_type(self, ntype_nodes: list, ntype: str):
+        if ntype == GraphNodeType.USER.value:
+            return self.compute_user_node_features(ntype_nodes)
+        elif ntype == GraphNodeType.ROUTER.value:
+            return self.compute_router_node_features(ntype_nodes)
+        elif ntype == GraphNodeType.TOKEN.value:
+            return self.compute_token_node_features(ntype_nodes)
+        elif ntype == GraphNodeType.OTHER_ACCOUNT.value:
+            return self.compute_other_account_node_features(ntype_nodes)
+        elif ntype == GraphNodeType.LOG_EVENT.value:
+            return self.compute_log_event_node_features(ntype_nodes)
+        elif ntype == GraphNodeType.VALIDATOR.value:
+            return self.compute_validator_node_features(ntype_nodes)
+        else:
+            raise ValueError(f"Unknown node type: {ntype}")

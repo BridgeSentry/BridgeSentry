@@ -47,14 +47,25 @@ def visualize_graph(graph_data):
     }
 
     edge_colors = []
+    edge_labels = {}
     for u, v, attrs in graph.edges(data=True):
-        print(attrs)
         edge_type = attrs.get("type")
-        print(edge_type)
         color = edge_type_colors.get(edge_type[1], "#CCCCCC")  # Default to gray if type is unknown
         edge_colors.append(color)
+        if edge_type[1] == GraphEdgeType.TRANSACTION.value:
+            edge_labels[(u, v)] = "TX"
+        elif edge_type[1] == GraphEdgeType.TOKEN_TRANSFER.value:
+            edge_labels[(u, v)] = "TT"
+        elif edge_type[1] == GraphEdgeType.TOKEN_AUTH.value:
+            edge_labels[(u, v)] = "TA"
+        elif edge_type[1] == GraphEdgeType.FUNCTION_CALL.value:
+            edge_labels[(u, v)] = "FC"
+        elif edge_type[1] == GraphEdgeType.LOG_RELATION.value:
+            edge_labels[(u, v)] = "LR"
+        elif edge_type[1] == GraphEdgeType.CROSS_CHAIN_RELATION.value:
+            edge_labels[(u, v)] = "CCR"
 
-    pos = nx.spring_layout(graph, k=2)
+    pos = nx.spring_layout(graph, k=2, iterations=50, seed=1)
     nx.draw_networkx(
         graph,
         pos=pos,
@@ -64,5 +75,6 @@ def visualize_graph(graph_data):
         edge_color=edge_colors,
         node_size=500,
     )
+    nx.draw_networkx_edge_labels(graph, pos, edge_labels=edge_labels)
     plt.show()
     input("Press Enter to continue...")
