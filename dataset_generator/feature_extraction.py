@@ -48,17 +48,19 @@ BLOCKCHAIN_STAGE_MAP = {
 }
 
 EVENT_TYPE_MAP = {
-    EventType.TRANSFER.value: [0, 0, 0, 1],
-    EventType.APPROVAL.value: [0, 0, 1, 0],
-    EventType.DEPOSIT_REQUEST.value: [0, 0, 1, 1],
-    EventType.DEPOSIT_CONFIRMATION.value: [0, 1, 0, 0],
-    EventType.WITHDRAWAL_REQUEST.value: [0, 1, 0, 1],
-    EventType.WITHDRAWAL_CONFIRMATION.value: [0, 1, 1, 0],
-    EventType.BURN.value: [0, 1, 1, 1],
-    EventType.MINT.value: [1, 0, 0, 0],
-    EventType.ROUTER_UNKNOWN.value: [1, 0, 0, 1],
-    EventType.TOKEN_UNKNOWN.value: [1, 0, 1, 0],
-    EventType.UNKNOWN.value: [0, 0, 0, 0],
+    EventType.TRANSFER.value: [0, 0, 0, 0],
+    EventType.APPROVAL.value: [0, 0, 0, 1],
+    EventType.BURN.value: [0, 0, 1, 0],
+    EventType.MINT.value: [0, 0, 1, 1],
+    EventType.OPERATION_REQUEST_SIGNING.value: [0, 1, 0, 0],
+    EventType.OPERATION_FINALIZED.value: [0, 1, 0, 1],
+    EventType.DEPOSIT_REQUEST.value: [1, 0, 0, 0],
+    EventType.DEPOSIT_CONFIRMATION.value: [1, 0, 0, 1],
+    EventType.WITHDRAWAL_REQUEST.value: [1, 0, 1, 0],
+    EventType.WITHDRAWAL_CONFIRMATION.value: [1, 0, 1, 1],
+    EventType.ROUTER_UNKNOWN.value: [1, 1, 0, 0],
+    EventType.TOKEN_UNKNOWN.value: [1, 1, 0, 1],
+    EventType.UNKNOWN.value: [1, 1, 1, 1],
 }
 
 LABEL_MAP = {
@@ -67,6 +69,12 @@ LABEL_MAP = {
     GraphLabel.ANOMALY_OFFCHAIN.value: 2,
     GraphLabel.ANOMALY_DESTINATION.value: 3,
 }
+
+IN_DEGREE_INDEX = 0
+OUT_DEGREE_INDEX = 1
+ARGS_NUM_INDEX = 14
+INPUT_SIZE_INDEX = 15
+AMOUNTS_INDEX = 16
 
 class FeatureExtractor:
     def __init__(self, nodes_df: DataFrame, edges_df: DataFrame):
@@ -132,7 +140,7 @@ class FeatureExtractor:
 
     def encode_event_types(self, node_attributes):
         # Use Binary encoding for event types, with 4 bits to allow for up to 16 different event types (we currently have 11)
-        return np.array([EVENT_TYPE_MAP.get(attr.get("event_type"), [1, 0, 1, 1]) for attr in node_attributes], dtype=int)
+        return np.array([EVENT_TYPE_MAP.get(attr.get("event_type"), EVENT_TYPE_MAP[EventType.UNKNOWN.value]) for attr in node_attributes], dtype=int)
 
     def encode_args_num(self, node_attributes):
         return np.array([attr.get("num_args", 0) for attr in node_attributes], dtype=int).reshape(-1, 1)
@@ -141,7 +149,7 @@ class FeatureExtractor:
         return np.array([attr.get("input_size", 0) for attr in node_attributes], dtype=int).reshape(-1, 1)
 
     def encode_amounts(self, nodes):
-        return np.array([float(node.amount_usd) if node.amount_usd is not None else -1.0 for node in nodes], dtype=np.float32).reshape(-1, 1)
+        return np.array([float(node.amount_usd) if node.amount_usd is not None and not np.isnan(float(node.amount_usd)) else 0 for node in nodes], dtype=np.float32).reshape(-1, 1)
 
     # ======== Validator-specific node feature encoding methods ========
     def encode_src_dst_blockchains_and_orders(self, node_attributes):
@@ -219,20 +227,19 @@ class FeatureExtractor:
         attr_json = [json.loads(node.attributes) if node.attributes else {} for node in log_event_nodes]
 
         in_deg, out_deg = self.compute_degrees(log_event_nodes)
-        feature_elements = [in_deg, out_deg]
+        feature_elements = [in_deg, out_deg] # 2 features
 
-        feature_elements.append(self.encode_blockchain_stages(log_event_nodes))
-        feature_elements.append(self.encode_node_blockchains(log_event_nodes))
+        feature_elements.append(self.encode_blockchain_stages(log_event_nodes)) # 3 features (one-hot encoding for source/offchain/destination)
+        feature_elements.append(self.encode_node_blockchains(log_event_nodes)) # 4 features (binary encoding for blockchains)
 
-        feature_elements.append(self.encode_event_orders(log_event_nodes))
+        feature_elements.append(self.encode_event_orders(log_event_nodes)) # 1 feature (normalized event order in transaction)
 
-        feature_elements.append(self.encode_event_types(attr_json))
-        feature_elements.append(self.encode_args_num(attr_json))
-        feature_elements.append(self.encode_input_size(attr_json))
+        feature_elements.append(self.encode_event_types(attr_json)) # 4 features (binary encoding for event types, with 4 bits allowing for up to 16 event types - we currently have 11)
+        feature_elements.append(self.encode_args_num(attr_json)) # 1 feature (number of arguments in the event, extracted from attributes JSON)
+        feature_elements.append(self.encode_input_size(attr_json)) # 1 feature (input size in bytes for the event, extracted from attributes JSON)
 
-        feature_elements.append(self.encode_amounts(log_event_nodes))
-        feature_elements.append(self.compute_token_symbols(log_event_nodes))
-        # feature_elements.append(self.compute_cobebert_embeddings(log_event_nodes, tokenizer, model)) # REMOVE THIS AS ALTERNATIVE TO THE OTHER FEATURES
+        feature_elements.append(self.encode_amounts(log_event_nodes)) # 1 feature (amount for the event, extracted from attributes JSON)
+        feature_elements.append(self.compute_token_symbols(log_event_nodes)) # 8 features (token symbol, encoded using MurmurHash3 as described above)
         return np.concatenate(feature_elements, axis=1)
 
     def compute_validator_node_features(self, validator_nodes):

@@ -30,4 +30,4 @@ class GraphDatasetGenerator:
         # logic stays centralized in one place.
         dataset = CrossChainTransactionsDataset(root=storage_folder)
         
-        print(f"Dataset length: {len(dataset)}")
+        print(f"Dataset num node features: {dataset[0]}")
