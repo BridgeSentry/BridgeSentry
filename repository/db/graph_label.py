@@ -1,7 +1,10 @@
 from enum import Enum
 
+class BlockchainGraphLabel(Enum):
+    NORMAL = "normal"
+    ANOMALY = "anomaly"
 
-class GraphLabel(Enum):
+class CrossChainGraphLabel(Enum):
     NORMAL = "normal"
     ANOMALY_SOURCE = "anomaly_source"
     ANOMALY_OFFCHAIN = "anomaly_offchain"

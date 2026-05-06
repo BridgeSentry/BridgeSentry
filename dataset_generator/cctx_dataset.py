@@ -9,7 +9,7 @@ import os
 from torch_geometric.data import InMemoryDataset, HeteroData
 from tqdm import tqdm
 
-from dataset_generator.feature_extraction import LABEL_MAP, FeatureExtractor
+from dataset_generator.feature_extraction import CROSS_CHAIN_LABEL_MAP, FeatureExtractor
 from repository.database import DBSession
 from repository.db.models import GraphEdge, GraphMappingBlockchain, GraphMappingCrossChain, GraphNode
 from repository.db.repository import GraphEdgeRepository, GraphMappingBlockchainRepository, GraphMappingCrossChainRepository, GraphNodeRepository
@@ -248,7 +248,7 @@ class CrossChainTransactionsDataset(InMemoryDataset):
                 graph_data[(src_type, edge_type, dst_type)].edge_index = edge_index
 
         # 3. Graph-level label
-        graph_data.y = torch.tensor([LABEL_MAP[label]], dtype=torch.long)
+        graph_data.y = torch.tensor([CROSS_CHAIN_LABEL_MAP[label]], dtype=torch.long)
         graph_data.y_str = label  # Keep the original string label for reference
 
         return graph_data

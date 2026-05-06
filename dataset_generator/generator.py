@@ -1,4 +1,4 @@
-from dataset_generator.dataset import CrossChainTransactionsDataset
+from dataset_generator.cctx_dataset import CrossChainTransactionsDataset
 from utils.utils import CustomException, load_module
 import os
 

@@ -3,7 +3,7 @@ import mmh3
 from pandas import DataFrame
 
 from neural_models.codebert_utils import get_codebert_embedding
-from repository.db.graph_label import BlockchainType, EventType, GraphEdgeType, GraphLabel, GraphNodeType
+from repository.db.graph_label import BlockchainGraphLabel, BlockchainType, EventType, GraphEdgeType, CrossChainGraphLabel, GraphNodeType
 import json
 
 NODE_TYPE_MAP = {
@@ -63,11 +63,16 @@ EVENT_TYPE_MAP = {
     EventType.UNKNOWN.value: [1, 1, 1, 1],
 }
 
-LABEL_MAP = {
-    GraphLabel.NORMAL.value: 0,
-    GraphLabel.ANOMALY_SOURCE.value: 1,
-    GraphLabel.ANOMALY_OFFCHAIN.value: 2,
-    GraphLabel.ANOMALY_DESTINATION.value: 3,
+SINGLE_CHAIN_LABEL_MAP = {
+    BlockchainGraphLabel.NORMAL.value: 0,
+    BlockchainGraphLabel.ANOMALY.value: 1,
+}
+
+CROSS_CHAIN_LABEL_MAP = {
+    CrossChainGraphLabel.NORMAL.value: 0,
+    CrossChainGraphLabel.ANOMALY_SOURCE.value: 1,
+    CrossChainGraphLabel.ANOMALY_OFFCHAIN.value: 2,
+    CrossChainGraphLabel.ANOMALY_DESTINATION.value: 3,
 }
 
 IN_DEGREE_INDEX = 0
@@ -137,6 +142,15 @@ class FeatureExtractor:
             else node.event_order / (num_events_destination - 1) if node.blockchain_type == BlockchainType.DESTINATION.value 
             else 0
             for node in nodes], dtype=np.float32).reshape(-1, 1)
+    
+    def encode_singlechain_event_orders(self, nodes):
+        # For single-chain graphs, we will simply normalize the event order based on the total number of events in the graph
+        num_events = len(nodes)
+        if num_events == 0:
+            raise ValueError("No nodes provided for encoding event orders (single-chain)")
+        return np.array([
+            -1 if node.event_order is None 
+            else node.event_order / (num_events - 1) for node in nodes], dtype=np.float32).reshape(-1, 1)
 
     def encode_event_types(self, node_attributes):
         # Use Binary encoding for event types, with 4 bits to allow for up to 16 different event types (we currently have 11)
@@ -149,7 +163,7 @@ class FeatureExtractor:
         return np.array([attr.get("input_size", 0) for attr in node_attributes], dtype=int).reshape(-1, 1)
 
     def encode_amounts(self, nodes):
-        return np.array([float(node.amount_usd) if node.amount_usd is not None and not np.isnan(float(node.amount_usd)) else 0 for node in nodes], dtype=np.float32).reshape(-1, 1)
+        return np.array([float(np.log1p(node.amount_usd)) if node.amount_usd is not None and not np.isnan(float(node.amount_usd)) else 0 for node in nodes], dtype=np.float32).reshape(-1, 1)
 
     # ======== Validator-specific node feature encoding methods ========
     def encode_src_dst_blockchains_and_orders(self, node_attributes):
@@ -169,7 +183,7 @@ class FeatureExtractor:
 
     # ======== Graph label encoding ========
     def encode_graph_label(self, label):
-        res = LABEL_MAP.get(label)
+        res = CROSS_CHAIN_LABEL_MAP.get(label)
         if res is None:
             raise ValueError(f"Unknown graph label: {label}")
         return res
@@ -223,7 +237,7 @@ class FeatureExtractor:
 
         return np.concatenate(feature_elements, axis=1)
 
-    def compute_log_event_node_features(self, log_event_nodes: list):
+    def compute_log_event_node_features(self, log_event_nodes: list, single_chain=False):
         attr_json = [json.loads(node.attributes) if node.attributes else {} for node in log_event_nodes]
 
         in_deg, out_deg = self.compute_degrees(log_event_nodes)
@@ -232,7 +246,10 @@ class FeatureExtractor:
         feature_elements.append(self.encode_blockchain_stages(log_event_nodes)) # 3 features (one-hot encoding for source/offchain/destination)
         feature_elements.append(self.encode_node_blockchains(log_event_nodes)) # 4 features (binary encoding for blockchains)
 
-        feature_elements.append(self.encode_event_orders(log_event_nodes)) # 1 feature (normalized event order in transaction)
+        if single_chain:
+            feature_elements.append(self.encode_singlechain_event_orders(log_event_nodes)) # 1 feature (normalized event order in transaction)
+        else:
+            feature_elements.append(self.encode_event_orders(log_event_nodes)) # 1 feature (normalized event order in transaction)
 
         feature_elements.append(self.encode_event_types(attr_json)) # 4 features (binary encoding for event types, with 4 bits allowing for up to 16 event types - we currently have 11)
         feature_elements.append(self.encode_args_num(attr_json)) # 1 feature (number of arguments in the event, extracted from attributes JSON)
@@ -251,7 +268,7 @@ class FeatureExtractor:
         feature_elements.extend(self.encode_src_dst_blockchains_and_orders(attr_json))
         return np.concatenate(feature_elements, axis=1)
 
-    def compute_node_features_type(self, ntype_nodes: list, ntype: str):
+    def compute_node_features_type(self, ntype_nodes: list, ntype: str, single_chain=False):
         if ntype == GraphNodeType.USER.value:
             return self.compute_user_node_features(ntype_nodes)
         elif ntype == GraphNodeType.ROUTER.value:
@@ -261,7 +278,7 @@ class FeatureExtractor:
         elif ntype == GraphNodeType.OTHER_ACCOUNT.value:
             return self.compute_other_account_node_features(ntype_nodes)
         elif ntype == GraphNodeType.LOG_EVENT.value:
-            return self.compute_log_event_node_features(ntype_nodes)
+            return self.compute_log_event_node_features(ntype_nodes, single_chain=single_chain)
         elif ntype == GraphNodeType.VALIDATOR.value:
             return self.compute_validator_node_features(ntype_nodes)
         else:
