@@ -6,30 +6,11 @@ from torch_geometric.loader import DataLoader
 from sklearn.model_selection import KFold, train_test_split
 from collections import defaultdict
 from typing import DefaultDict
-from dataset_generator.dataset import CrossChainTransactionsDataset
+from dataset_generator.cctx_dataset import CrossChainTransactionsDataset
 from dataset_generator.feature_extraction import AMOUNTS_INDEX, ARGS_NUM_INDEX, IN_DEGREE_INDEX, INPUT_SIZE_INDEX, OUT_DEGREE_INDEX
 from dataset_generator.model.bridge_defender import BridgeDefender
 from dataset_generator.types import CanonicalEdgeType, EdgeMetapath
-from repository.db.graph_label import GraphLabel, GraphNodeType
-
-def generate_metapaths(max_length: int, node_types: list[str]) -> list[tuple[str]]:
-    def generate_recursive(current_path: list[str]) -> list[tuple[str]]:
-        if len(current_path) > max_length:
-            return []
-
-        # Include all non-empty paths up to max_length.
-        paths = [tuple(current_path)] if current_path else []
-
-        if len(current_path) == max_length:
-            return paths
-
-        for node_type in node_types:
-            paths.extend(generate_recursive(current_path + [node_type]))
-
-        return paths
-
-    metapaths = generate_recursive([])
-    return metapaths.sort(key=lambda x: (x, len(x)))  # Sort lexicographically and by length
+from repository.db.graph_label import GraphNodeType
 
 def get_adjacency_matrices(
     graph: HeteroData,
