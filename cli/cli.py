@@ -94,6 +94,12 @@ class Cli:
             help="Number of folds for K-Fold cross-validation (default: 5)",
         )
         training_parser.add_argument(
+            "--num-epochs",
+            type=int,
+            default=100,
+            help="Number of training epochs per fold (default: 100)",
+        )
+        training_parser.add_argument(
             "--no-gpu",
             action="store_true",
             help="Disable GPU usage for training (default: False)",

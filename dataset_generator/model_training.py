@@ -1,6 +1,6 @@
 from sklearn.metrics import classification_report
 import torch
-from torch_geometric.data import HeteroData
+from torch_geometric.data import Batch, HeteroData
 from torch_geometric.loader import DataLoader
 
 from sklearn.model_selection import KFold, train_test_split
@@ -396,6 +396,20 @@ def train(dataset_path: str, model_args: dict, **kwargs):
 
     k_folds = kwargs.get("k_folds", 5)
     kfold = KFold(n_splits=k_folds, shuffle=True, random_state=42)
+
+    criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
+
+    def collate_fn(batch: list[HeteroData]) -> Batch:
+        pyg_batch = Batch.from_data_list(batch)
+        pyg_batch.aggregated_features = {
+            mp: torch.cat([g.aggregated_features[mp] for g in batch], dim=0)
+            for mp in metapaths
+        }
+        return pyg_batch
+
+    best_val_loss = float("inf")
+    best_model_state: dict | None = None
+
     for fold, (train_idx, val_idx) in enumerate(kfold.split(X_train_val)):
         model = BridgeDefender(
             metapath_feature_sizes=all_feature_sizes,
@@ -418,45 +432,87 @@ def train(dataset_path: str, model_args: dict, **kwargs):
             weight_decay=model_args.get("weight_decay", 5e-4),
         )
 
-        criterion = torch.nn.CrossEntropyLoss(
-            weight=class_weights
-        )
-        model.train()
-
         train_subset = torch.utils.data.Subset(X_train_val, train_idx)
         val_subset = torch.utils.data.Subset(X_train_val, val_idx)
-        train_loader = DataLoader(train_subset, batch_size=model_args.get("batch_size", 32), shuffle=True, num_workers=kwargs.get("num_workers", 0))
-        val_loader = DataLoader(val_subset, batch_size=model_args.get("batch_size", 32), shuffle=False, num_workers=kwargs.get("num_workers", 0))
 
-        print(f"Start training on fold {fold + 1}/{k_folds}...")
-        for data in train_loader:
-            data = data.to(device)
+        train_loader = DataLoader(train_subset, batch_size=model_args.get("batch_size", 32), shuffle=True, num_workers=kwargs.get("num_workers", 0), collate_fn=collate_fn)
+        val_loader = DataLoader(val_subset, batch_size=model_args.get("batch_size", 32), shuffle=False, num_workers=kwargs.get("num_workers", 0), collate_fn=collate_fn)
 
-            output = model(data, data.aggregated_features)
-
-            loss = criterion(output, data.y)
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
-            print(f"Fold {fold + 1}, Loss: {loss.item():.4f}")
-
-        model.eval()
-        val_loss = 0
-
-        print(f"Start validation on fold {fold + 1}/{k_folds}...")
-        with torch.no_grad():
-            all_labels = []
-            all_preds = []
-            for data in val_loader:
+        n_epochs = model_args.get("num_epochs", 100)
+        for epoch in range(n_epochs):
+            model.train()
+            print(f"Fold {fold + 1}/{k_folds}, epoch {epoch + 1}/{n_epochs} — training...")
+            for data in train_loader:
                 data = data.to(device)
                 output = model(data, data.aggregated_features)
                 loss = criterion(output, data.y)
-                val_loss += loss.item()
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
+                print(f"  Fold {fold + 1}, epoch {epoch + 1}, loss: {loss.item():.4f}")
 
-                all_labels.extend(data.y.detach().cpu().tolist())
-                all_preds.extend(output.argmax(dim=1).detach().cpu().tolist())
-            
-            print(f"Fold {fold + 1}, Validation Loss: {val_loss / len(val_loader):.4f}")
-            print(classification_report(all_labels, all_preds))
-            # TODO Save classification report for this fold
             model.eval()
+            val_loss = 0
+            print(f"Fold {fold + 1}/{k_folds}, epoch {epoch + 1}/{n_epochs} — validation...")
+            with torch.no_grad():
+                all_labels = []
+                all_preds = []
+                for data in val_loader:
+                    data = data.to(device)
+                    output = model(data, data.aggregated_features)
+                    loss = criterion(output, data.y)
+                    val_loss += loss.item()
+                    all_labels.extend(data.y.detach().cpu().tolist())
+                    all_preds.extend(output.argmax(dim=1).detach().cpu().tolist())
+
+                avg_val_loss = val_loss / len(val_loader)
+                print(f"  Fold {fold + 1}, epoch {epoch + 1}, val loss: {avg_val_loss:.4f}")
+                print(classification_report(all_labels, all_preds))
+                if avg_val_loss < best_val_loss:
+                    best_val_loss = avg_val_loss
+                    best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+
+    if best_model_state is None:
+        print("No model was trained; skipping test evaluation.")
+        return
+
+    print("=== Test set evaluation (best model from K-fold CV) ===")
+    best_model = BridgeDefender(
+        metapath_feature_sizes=all_feature_sizes,
+        node_types=dataset[0].node_types,
+        first_layer_channels=model_args.get("first_layer_channels", 128),
+        hidden_channels=model_args.get("hidden_channels", 64),
+        out_channels=model_args.get("out_channels", 4),
+        dropout=model_args.get("dropout", 0.5),
+        input_drop=model_args.get("input_drop", 0.0),
+        att_drop=model_args.get("att_drop", 0.0),
+        n_fp_layers=model_args.get("n_fp_layers", 2),
+        n_mlp_layers=model_args.get("n_mlp_layers", 2),
+        act=model_args.get("act", 'relu'),
+        residual=model_args.get("residual", False),
+        pooling=model_args.get("pooling", 'mean'),
+    ).to(device)
+    best_model.load_state_dict({k: v.to(device) for k, v in best_model_state.items()})
+    best_model.eval()
+
+    test_loader = DataLoader(
+        X_test,
+        batch_size=model_args.get("batch_size", 32),
+        shuffle=False,
+        num_workers=kwargs.get("num_workers", 0),
+        collate_fn=collate_fn,
+    )
+    test_loss = 0
+    all_labels = []
+    all_preds = []
+    with torch.no_grad():
+        for data in test_loader:
+            data = data.to(device)
+            output = best_model(data, data.aggregated_features)
+            loss = criterion(output, data.y)
+            test_loss += loss.item()
+            all_labels.extend(data.y.detach().cpu().tolist())
+            all_preds.extend(output.argmax(dim=1).detach().cpu().tolist())
+
+    print(f"Test loss: {test_loss / len(test_loader):.4f}")
+    print(classification_report(all_labels, all_preds))
