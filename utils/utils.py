@@ -7,7 +7,6 @@ from torch_geometric import logging
 
 from config.constants import Bridge
 
-
 def log_to_file(message: str, log_file: str):
     """
     Writes an error message to the specified log file with a timestamp.

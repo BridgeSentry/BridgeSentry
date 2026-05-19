@@ -15,6 +15,12 @@ class GraphMappingBlockchainRepository(BaseRepository):
     def __init__(self, session_factory):
         super().__init__(GraphMappingBlockchain, session_factory)
 
+    def get_all_non_cctx(self):
+        with self.get_session() as session:
+            return session.query(GraphMappingBlockchain).filter(
+                GraphMappingBlockchain.cctx_graph_id.is_(None)
+            ).all()
+
     def get_by_id(self, graph_id: int):
         with self.get_session() as session:
             return session.query(GraphMappingBlockchain).filter(GraphMappingBlockchain.graph_id == graph_id).first()

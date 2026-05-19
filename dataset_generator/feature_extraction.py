@@ -15,6 +15,16 @@ NODE_TYPE_MAP = {
     GraphNodeType.VALIDATOR.value: 5,
 }
 
+# Static feature dimensionality per node type (matches compute_node_features_type output widths).
+NODE_TYPE_FEATURE_DIMS = {
+    GraphNodeType.USER.value: 9,          # in_deg, out_deg, stage(3), blockchain(4)
+    GraphNodeType.ROUTER.value: 9,
+    GraphNodeType.TOKEN.value: 17,        # + token_symbol(8)
+    GraphNodeType.OTHER_ACCOUNT.value: 9,
+    GraphNodeType.LOG_EVENT.value: 25,    # + event_order(1), event_type(4), args_num(1), input_size(1), amounts(1), token_symbol(8)
+    GraphNodeType.VALIDATOR.value: 12,    # + src_blockchain(4), dst_blockchain(4), order(2)
+}
+
 EDGE_TYPE_MAP = {
     GraphEdgeType.TRANSACTION.value: 0,
     GraphEdgeType.TOKEN_TRANSFER.value: 1,
@@ -150,6 +160,7 @@ class FeatureExtractor:
             raise ValueError("No nodes provided for encoding event orders (single-chain)")
         return np.array([
             -1 if node.event_order is None 
+            else 1 if num_events == 1
             else node.event_order / (num_events - 1) for node in nodes], dtype=np.float32).reshape(-1, 1)
 
     def encode_event_types(self, node_attributes):
@@ -163,7 +174,7 @@ class FeatureExtractor:
         return np.array([attr.get("input_size", 0) for attr in node_attributes], dtype=int).reshape(-1, 1)
 
     def encode_amounts(self, nodes):
-        return np.array([float(np.log1p(node.amount_usd)) if node.amount_usd is not None and not np.isnan(float(node.amount_usd)) else 0 for node in nodes], dtype=np.float32).reshape(-1, 1)
+        return np.array([float(np.log1p(float(node.amount_usd))) if node.amount_usd is not None and not np.isnan(float(node.amount_usd)) else 0 for node in nodes], dtype=np.float32).reshape(-1, 1)
 
     # ======== Validator-specific node feature encoding methods ========
     def encode_src_dst_blockchains_and_orders(self, node_attributes):

@@ -2,6 +2,7 @@ import argparse
 
 from config.constants import Bridge
 from dataset_generator.generator import GraphDatasetGenerator
+from dataset_generator.types import DATASET_TYPE
 from utils.utils import get_enum_instance
 
 from dataset_generator.model_training import train
@@ -11,15 +12,18 @@ class Cli:
 
     def generate_graph_dataset(args):
         bridges = [get_enum_instance(Bridge, bridge) for bridge in args.bridge] if args.bridge else list(Bridge)
-        output_folder = args.out
+        dataset_type = args.dataset
+        output_folder = args.data_dir
+        force_reload = args.force_reload
 
         # Create generator file
-        generator = GraphDatasetGenerator(bridges, output_folder)
+        generator = GraphDatasetGenerator(bridges, dataset_type, output_folder, force_reload)
         generator.generate_graph_dataset()
 
     def train_model(args):
-        dataset_path = args.dataset
-        
+        dataset_type = args.dataset
+        dataset_path = args.data_dir
+        force_reload = args.force_reload
         model_args = {
             "first_layer_channels": args.first_layer_channels,
             "hidden_channels": args.hidden_channels,
@@ -40,7 +44,9 @@ class Cli:
         }
 
         train(
+            dataset_type=dataset_type,
             dataset_path=dataset_path,
+            force_reload=force_reload,
             model_args=model_args,
             **kwargs
         )
@@ -57,6 +63,24 @@ class Cli:
             help="Generate graph dataset for machine learning",
         )
         graph_dataset_parser.add_argument(
+            "--dataset",
+            type=str,
+            default="mixed",
+            choices=[
+                DATASET_TYPE.MIXED, 
+                DATASET_TYPE.SINGLE, 
+                DATASET_TYPE.CCTX
+            ],
+            required=True,
+            help="The type of graph dataset to generate (default: mixed)",
+        )
+        graph_dataset_parser.add_argument(
+            "--data-dir",
+            type=str,
+            required=True,
+            help="The output directory where the generated graph dataset will be saved.",
+        )
+        graph_dataset_parser.add_argument(
             "--bridge",
             choices=[bridge.value for bridge in Bridge],
             nargs="+",
@@ -64,10 +88,9 @@ class Cli:
             help="The bridge(s) to generate the graph dataset for. If not specified, datasets for all bridges will be generated.",
         )
         graph_dataset_parser.add_argument(
-            "--out",
-            type=str,
-            required=True,
-            help="The output directory where the generated graph dataset will be saved.",
+            "--force-reload",
+            action="store_true",
+            help="Force reload the graph dataset even if it already exists (default: False)",
         )
         graph_dataset_parser.set_defaults(func=Cli.generate_graph_dataset)
 
@@ -78,8 +101,25 @@ class Cli:
         training_parser.add_argument(
             "--dataset",
             type=str,
+            default="mixed",
+            choices=[
+                DATASET_TYPE.MIXED, 
+                DATASET_TYPE.SINGLE, 
+                DATASET_TYPE.CCTX
+            ],
             required=True,
-            help="Path to the graph dataset to train on (should be the output folder of the graph-dataset action)",
+            help="The type of graph dataset to train on",
+        )
+        training_parser.add_argument(
+            "--data-dir",
+            type=str,
+            required=True,
+            help="The directory where the graph dataset is located.",
+        )
+        training_parser.add_argument(
+            "-f", "--force-reload",
+            action="store_true",
+            help="Force reload the graph dataset even if it already exists (default: False)",
         )
         training_parser.add_argument(
             "--num-workers",

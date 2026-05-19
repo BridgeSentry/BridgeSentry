@@ -1,3 +1,5 @@
+from venv import logger
+
 from sklearn.metrics import classification_report
 import torch
 from torch_geometric.data import Batch, HeteroData
@@ -9,8 +11,9 @@ from typing import DefaultDict
 from dataset_generator.cctx_dataset import CrossChainTransactionsDataset
 from dataset_generator.feature_extraction import AMOUNTS_INDEX, ARGS_NUM_INDEX, IN_DEGREE_INDEX, INPUT_SIZE_INDEX, OUT_DEGREE_INDEX
 from dataset_generator.model.bridge_defender import BridgeDefender
-from dataset_generator.types import CanonicalEdgeType, EdgeMetapath
+from dataset_generator.types import DATASET_TYPE, CanonicalEdgeType, EdgeMetapath
 from repository.db.graph_label import GraphNodeType
+from dataset_generator.types import DATASET_CLASS
 
 def get_adjacency_matrices(
     graph: HeteroData,
@@ -290,16 +293,16 @@ def aggregate_metapath_features(
     return metapath_features, feature_sizes
 
 
-def train(dataset_path: str, model_args: dict, **kwargs):
+def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, model_args: dict, **kwargs):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     device = device if kwargs.get("gpu", "false") == "true" else "cpu"
 
-    dataset = CrossChainTransactionsDataset(root=dataset_path)
+    dataset = DATASET_CLASS[dataset_type](root=dataset_path, force_reload=force_reload)
     torch.manual_seed(42)
-
 
     # First, split the dataset into a training/validation set for each fold using K-Fold cross-validation,
     # and a test set that is held out for final evaluation after training is complete.
+    print(f"Splitting dataset into train/val/test sets with test size 15% and {kwargs.get('k_folds', 5)} folds for cross-validation.")
     X = dataset
     y = [int(data.y.item()) for data in dataset]
     X_train_val, X_test, y_train_val, y_test = train_test_split(X, y, test_size=0.15, random_state=42, stratify=y)
@@ -308,6 +311,7 @@ def train(dataset_path: str, model_args: dict, **kwargs):
     # Specifically, we will apply min-max normalization
     # to the node features of each node type across the entire training/validation set, and 
     # then apply the same scale to the test set to avoid data leakage.
+    print(f"Normalizing node features using min-max normalization.")
     max_degrees = torch.zeros(1, dtype=torch.float32)
     max_args_num = torch.zeros(1, dtype=torch.float32)
     max_inputs_size = torch.zeros(1, dtype=torch.float32)
@@ -317,8 +321,8 @@ def train(dataset_path: str, model_args: dict, **kwargs):
             if hasattr(graph[node_type], 'x') and graph[node_type].x is not None:
                 in_degrees = graph[node_type].x[:, IN_DEGREE_INDEX]
                 out_degrees = graph[node_type].x[:, OUT_DEGREE_INDEX]
-                max_degrees = torch.max(max_degrees, in_degrees.max(dim=0).values)
-                max_degrees = torch.max(max_degrees, out_degrees.max(dim=0).values)
+                max_degrees = torch.max(max_degrees, in_degrees.max(dim=0).values if in_degrees.shape[0] > 0 else torch.zeros_like(max_degrees))
+                max_degrees = torch.max(max_degrees, out_degrees.max(dim=0).values if out_degrees.shape[0] > 0 else torch.zeros_like(max_degrees))
 
             if node_type == GraphNodeType.LOG_EVENT.value:
                 # For log event nodes, we also want to normalize the args_num feature (which is at index 14),
@@ -328,9 +332,9 @@ def train(dataset_path: str, model_args: dict, **kwargs):
                     args_num = graph[node_type].x[:, ARGS_NUM_INDEX]
                     inputs_size = graph[node_type].x[:, INPUT_SIZE_INDEX]
                     amounts = graph[node_type].x[:, AMOUNTS_INDEX]
-                    max_args_num = torch.max(max_args_num, args_num.max(dim=0).values)
-                    max_inputs_size = torch.max(max_inputs_size, inputs_size.max(dim=0).values)
-                    max_amounts = torch.max(max_amounts, amounts.max(dim=0).values)
+                    max_args_num = torch.max(max_args_num, args_num.max(dim=0).values if args_num.shape[0] > 0 else torch.zeros_like(max_args_num))
+                    max_inputs_size = torch.max(max_inputs_size, inputs_size.max(dim=0).values if inputs_size.shape[0] > 0 else torch.zeros_like(max_inputs_size))
+                    max_amounts = torch.max(max_amounts, amounts.max(dim=0).values if amounts.shape[0] > 0 else torch.zeros_like(max_amounts))
 
     for graph in X_train_val + X_test:
         for node_type in graph.node_types:

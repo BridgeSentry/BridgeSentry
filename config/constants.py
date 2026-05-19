@@ -11,3 +11,4 @@ class Bridge(Enum):
     OMNIBRIDGE = "omnibridge"
     DEBRIDGE = "debridge"
     MAYAN = "mayan"
+    NOMAD = "nomad"
