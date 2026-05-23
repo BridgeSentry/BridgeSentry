@@ -42,8 +42,6 @@ class GraphDatasetGenerator:
         # Also count the ones that are cross-chain vs single-chain and print the statistics
         fraud_count = 0
         non_fraud_count = 0
-        cross_chain_count = 0
-        single_chain_count = 0
         bridge_counts = {bridge.value: 0 for bridge in self.bridges}
         for graph in dataset:
             if graph.y.item() == 1:
@@ -54,18 +52,10 @@ class GraphDatasetGenerator:
             if hasattr(graph, 'bridge') and graph.bridge in bridge_counts:
                 bridge_counts[graph.bridge] += 1
 
-            if graph.graph_type == "cross_chain":
-                cross_chain_count += 1
-            else:
-                single_chain_count += 1
         print("========= STATISTICS =========")
         print(f"Normal-labeled graphs: {non_fraud_count}")
         print(f"Anomaly-labeled graphs: {fraud_count}")
         print(f"Anomaly ratio: {((fraud_count / len(dataset)) * 100):.3f}%")
-        print("------------------------------")
-        print(f"Single-chain graphs: {single_chain_count}")
-        print(f"Cross-chain graphs: {cross_chain_count}")
-        print(f"Cross-chain ratio: {((cross_chain_count / len(dataset)) * 100):.3f}%")
         print("------------------------------")
         print("Bridge distribution:")
         for bridge, count in bridge_counts.items():

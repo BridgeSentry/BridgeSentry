@@ -2,7 +2,7 @@ from typing import TypeAlias
 
 from dataset_generator.cctx_dataset import CrossChainTransactionsDataset
 from dataset_generator.mixed_transactions_dataset import MixedTransactionsDataset
-from dataset_generator.single_chain_dataset import BlockchainTransactionsDataset
+from dataset_generator.single_transactions_dataset import SingleTransactionsDataset
 
 
 CanonicalEdgeType: TypeAlias = tuple[str, str, str]
@@ -17,6 +17,6 @@ class DATASET_TYPE:
 
 DATASET_CLASS = {
     DATASET_TYPE.MIXED: MixedTransactionsDataset,
-    DATASET_TYPE.SINGLE: BlockchainTransactionsDataset,
+    DATASET_TYPE.SINGLE: SingleTransactionsDataset,
     DATASET_TYPE.CCTX: CrossChainTransactionsDataset
 }

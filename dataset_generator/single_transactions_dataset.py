@@ -9,10 +9,10 @@ import os
 from torch_geometric.data import InMemoryDataset, HeteroData
 from tqdm import tqdm
 
-from dataset_generator.feature_extraction import SINGLE_CHAIN_LABEL_MAP, FeatureExtractor
+from dataset_generator.feature_extraction import NODE_TYPE_FEATURE_DIMS, SINGLE_CHAIN_LABEL_MAP, FeatureExtractor
 from repository.database import DBSession
-from repository.db.models import GraphEdge, GraphMappingBlockchain, GraphNode
-from repository.db.repository import GraphEdgeRepository, GraphMappingBlockchainRepository, GraphNodeRepository
+from repository.db.models import GraphEdge, GraphMappingBlockchain, GraphMappingCrossChain, GraphNode
+from repository.db.repository import GraphEdgeRepository, GraphMappingBlockchainRepository, GraphMappingCrossChainRepository, GraphNodeRepository
 from utils.utils import log_to_cli
 import json
 
@@ -27,7 +27,7 @@ def _load_data(file_path):
         data_list = torch.load(file_path)
     return data_list
 
-class BlockchainTransactionsDataset(InMemoryDataset):
+class SingleTransactionsDataset(InMemoryDataset):
     def __init__(
             self, 
             root: str, 
@@ -49,7 +49,7 @@ class BlockchainTransactionsDataset(InMemoryDataset):
 
     @property
     def raw_file_names(self):
-        return ['blockchain_mappings.csv', 'graph_nodes.csv', 'graph_edges.csv']
+        return ['blockchain_mappings.csv', 'cross_chain_mappings.csv', 'graph_nodes.csv', 'graph_edges.csv']
 
     @property
     def processed_file_names(self):
@@ -64,8 +64,9 @@ class BlockchainTransactionsDataset(InMemoryDataset):
                 reader = csv.DictReader(csvfile)
                 for row in reader:
                     self._data_index.append({
-                        'cctx_graph_id': row['cctx_graph_id'],
-                        'file_path': row['file_path'],
+                        'graph_id': row['graph_id'],
+                        'tx_hash': row['tx_hash'],
+                        'file_name': row['file_name'],
                         'offset': int(row['offset']),
                     })
         return self._data_index
@@ -85,7 +86,8 @@ class BlockchainTransactionsDataset(InMemoryDataset):
     
     def get(self, idx) -> HeteroData:
         index_entry = self.data_index[idx]
-        file_path = index_entry['file_path']
+        file_name = index_entry['file_name']
+        file_path = os.path.join(self.processed_dir, file_name)
         offset = index_entry['offset']
         data_list = _load_data(file_path)
         return data_list[offset]
@@ -106,24 +108,9 @@ class BlockchainTransactionsDataset(InMemoryDataset):
                     row.append(value)
                 writer.writerow(row)
 
-    def filter_out_crosschain_edges(self, output_file):
-        output_path = os.path.join(self.raw_dir, output_file)
-        os.makedirs(self.raw_dir, exist_ok=True)  # Ensure the raw folder exists
-        with open(output_path + ".tmp", "w") as csvfile:
-            writer = csv.writer(csvfile)
-            with open(output_path, "r") as infile:
-                reader = csv.reader(infile)
-                header = next(reader)
-                writer.writerow(header)  # Write header
-                for row in reader:
-                    edge_type = row[header.index("edge_type")]
-                    if edge_type != "cross_chain_relation":
-                        writer.writerow(row)
-        os.replace(output_path + ".tmp", output_path)  # Replace original file with filtered version
-
     def download(self):
         log_to_cli("Exporting data from database to CSV files... ")
-        blockchain_tx_mappings = self.blockchain_mapping_repo.get_all()
+        blockchain_tx_mappings = self.blockchain_mapping_repo.get_all_non_cctx()
         blockchain_columns = [col.name for col in GraphMappingBlockchain.__table__.columns]
         self.convert_datatype_to_csv(blockchain_tx_mappings, blockchain_columns, "blockchain_mappings.csv")
 
@@ -134,14 +121,11 @@ class BlockchainTransactionsDataset(InMemoryDataset):
         edges = self.graph_edges_repo.get_all()
         edge_columns = [col.name for col in GraphEdge.__table__.columns]
         self.convert_datatype_to_csv(edges, edge_columns, "graph_edges.csv")
-        # Filter out any cross-chain relation edges from the downloaded set
-        self.filter_out_crosschain_edges("graph_edges.csv")
 
     def process(self):
-
         blockchain_df = pd.read_csv(os.path.join(self.raw_dir, 'blockchain_mappings.csv'))
         nodes_df = pd.read_csv(os.path.join(self.raw_dir, 'graph_nodes.csv'))
-        edges_df = pd.read_csv(os.path.join(self.raw_dir, 'graph_edges.csv'))
+        edges_df = pd.read_csv(os.path.join(self.raw_dir, 'graph_edges.csv'), dtype={'deposit_id': 'str'})
         
         feature_extractor = FeatureExtractor(nodes_df, edges_df)
 
@@ -149,21 +133,22 @@ class BlockchainTransactionsDataset(InMemoryDataset):
         index_path = os.path.join(self.processed_dir, 'data_index.csv')
         index_file = open(index_path, 'w')
         writer = csv.writer(index_file)
-        writer.writerow(['index', 'blockchain_graph_id', 'file_path', 'offset'])
+        writer.writerow(['index', 'graph_id', 'tx_hash', 'file_name', 'offset'])
 
         # We want to save up to 50 graphs in each file, so that:
         # a) We don't have a huge file that takes a long time to load / generate, and
         # b) storing all graphs in a single file would be too memory intensive during generation.
         compressed_file_number = 0
-        graph_file_path = os.path.join(self.processed_dir, f'graph_data_{compressed_file_number}.pt')
+        graph_file_name = f'graph_data_{compressed_file_number}.pt'
         offset = 0
         node_types = set()
         edge_types = set()
 
         # Add a progress bar to track processing progresss
-        pbar = tqdm(total=len(blockchain_df), desc="Processing graphs", unit="graph")
-        pbar.set_description("Processing graphs dataset")
+        pbar = tqdm(total=blockchain_df.shape[0], desc="Processing graphs", unit="graph")
+        pbar.set_description("Processing single-chain graphs dataset")
 
+        # First process single-chain graphs
         data_list = []
         for index, row in blockchain_df.iterrows():
             blockchain_graph_id = row['graph_id']
@@ -172,8 +157,17 @@ class BlockchainTransactionsDataset(InMemoryDataset):
             edges = edges_df[edges_df['chain_graph_id'] == blockchain_graph_id]
             label = row['label']
 
+            # Check if there is a 'transaction' edge type in this graph, if so skip it
+            #! TESTING PURPOSES ONLY - REMOVE THIS CHECK LATER
+            # if 'transaction' in edges['edge_type'].values:
+            #     pbar.update(1)
+            #     continue
+
+
             # Process and save the graph data
             graph_data = self.process_heterogeneous_graph(nodes, edges, label, feature_extractor)
+            graph_data.bridge = row['bridge']  # Add a custom attribute to indicate the bridge (not used in model)
+            graph_data.tx_hash = row['tx_hash']  # Add a custom attribute to keep track of the transaction hash (not used in model)
             if self.pre_filter is not None and not self.pre_filter(graph_data):
                 continue
             if self.pre_transform is not None:
@@ -181,7 +175,7 @@ class BlockchainTransactionsDataset(InMemoryDataset):
 
             # Save the graph position in the index file
             data_list.append(graph_data)
-            writer.writerow([index, blockchain_graph_id, graph_file_path, offset])
+            writer.writerow([index, blockchain_graph_id, row['tx_hash'], graph_file_name, offset])
             offset += 1
 
             # Add the new node and edge types to the sets
@@ -190,16 +184,18 @@ class BlockchainTransactionsDataset(InMemoryDataset):
 
             # Save the graph data in batches of 50 to avoid memory issues
             if len(data_list) >= 50:
+                graph_file_path = os.path.join(self.processed_dir, f'graph_data_{compressed_file_number}.pt')
                 torch.save(data_list, graph_file_path)
                 data_list = []
                 compressed_file_number += 1
-                graph_file_path = os.path.join(self.processed_dir, f'graph_data_{compressed_file_number}.pt')
+                graph_file_name = f'graph_data_{compressed_file_number}.pt'
                 offset = 0
 
             pbar.update(1)
 
         # Ensure any remaining graphs are saved
         if len(data_list) > 0:
+            graph_file_path = os.path.join(self.processed_dir, f'graph_data_{compressed_file_number}.pt')
             torch.save(data_list, graph_file_path)
 
         pbar.close()
@@ -227,6 +223,14 @@ class BlockchainTransactionsDataset(InMemoryDataset):
             node_id_to_local_idx_by_type[ntype] = dict(
                 zip(ntype_nodes_df["node_id"].tolist(), ntype_nodes_df.index.tolist())
             )
+
+        # Ensure every known node type has an x tensor (even if empty) so all graphs share
+        # the same schema. This is required for correct PyG batching and avoids
+        # 'NodeStorage has no attribute x' errors in the model for absent node types.
+        for ntype, dim in NODE_TYPE_FEATURE_DIMS.items():
+            if ntype not in node_id_to_local_idx_by_type:
+                graph_data[ntype].x = torch.zeros((0, dim), dtype=torch.float)
+                node_id_to_local_idx_by_type[ntype] = {}
 
         # 2. Process edges
         if not edges.empty:

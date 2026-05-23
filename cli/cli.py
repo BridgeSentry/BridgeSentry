@@ -40,6 +40,7 @@ class Cli:
         kwargs = {
             "gpu": not args.no_gpu,
             "kfolds": args.kfolds,
+            "num_epochs": args.num_epochs,
             "num_workers": args.num_workers
         }
 
@@ -65,7 +66,7 @@ class Cli:
         graph_dataset_parser.add_argument(
             "--dataset",
             type=str,
-            default="mixed",
+            default=DATASET_TYPE.SINGLE,
             choices=[
                 DATASET_TYPE.MIXED, 
                 DATASET_TYPE.SINGLE, 

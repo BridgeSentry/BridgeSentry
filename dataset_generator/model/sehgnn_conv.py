@@ -57,8 +57,8 @@ class SemanticFusionTransformer(nn.Module):
             assert mask.size() == torch.Size([B, M])
 
         q = self.query(x).view(B, M, H, -1).permute(0, 2, 1, 3)  # [B, H, M, D//4]
-        k = self.key(x).view(B, M, H, -1).permute(0, 2, 3, 1)    # [B, H, M, D//4]
-        v = self.value(x).view(B, M, H, -1).permute(0, 2, 1, 3)  # [B, H, M, D]//4]
+        k = self.key(x).view(B, M, H, -1).permute(0, 2, 3, 1)    # [B, H, D//4, M]
+        v = self.value(x).view(B, M, H, -1).permute(0, 2, 1, 3)  # [B, H, M, D//4]
 
         # Calculate mutual attention scores and apply dropout
         beta = F.softmax(self.act(q @ k / math.sqrt(q.size(-1))), dim=-1)  # [B, H, M, M(normalized)]

@@ -5,7 +5,7 @@ import torch
 from torch_geometric.data import Batch, HeteroData
 from torch_geometric.loader import DataLoader
 
-from sklearn.model_selection import KFold, train_test_split
+from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 from collections import defaultdict
 from typing import DefaultDict
 from dataset_generator.cctx_dataset import CrossChainTransactionsDataset
@@ -399,7 +399,8 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         all_feature_sizes.update(feature_sizes)
 
     k_folds = kwargs.get("k_folds", 5)
-    kfold = KFold(n_splits=k_folds, shuffle=True, random_state=42)
+    num_epochs = kwargs.get("num_epochs", 100)
+    kfold = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=42)
 
     criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
 
@@ -414,7 +415,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
     best_val_loss = float("inf")
     best_model_state: dict | None = None
 
-    for fold, (train_idx, val_idx) in enumerate(kfold.split(X_train_val)):
+    for fold, (train_idx, val_idx) in enumerate(kfold.split(X_train_val, y_train_val)):
         model = BridgeDefender(
             metapath_feature_sizes=all_feature_sizes,
             node_types=dataset[0].node_types,
@@ -442,10 +443,9 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         train_loader = DataLoader(train_subset, batch_size=model_args.get("batch_size", 32), shuffle=True, num_workers=kwargs.get("num_workers", 0), collate_fn=collate_fn)
         val_loader = DataLoader(val_subset, batch_size=model_args.get("batch_size", 32), shuffle=False, num_workers=kwargs.get("num_workers", 0), collate_fn=collate_fn)
 
-        n_epochs = model_args.get("num_epochs", 100)
-        for epoch in range(n_epochs):
+        for epoch in range(num_epochs):
             model.train()
-            print(f"Fold {fold + 1}/{k_folds}, epoch {epoch + 1}/{n_epochs} — training...")
+            print(f"Fold {fold + 1}/{k_folds}, epoch {epoch + 1}/{num_epochs} — training...")
             for data in train_loader:
                 data = data.to(device)
                 output = model(data, data.aggregated_features)
@@ -453,11 +453,11 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
                 loss.backward()
                 optimizer.step()
                 optimizer.zero_grad()
-                print(f"  Fold {fold + 1}, epoch {epoch + 1}, loss: {loss.item():.4f}")
+                # print(f"  Fold {fold + 1}, epoch {epoch + 1}, loss: {loss.item():.4f}")
 
             model.eval()
             val_loss = 0
-            print(f"Fold {fold + 1}/{k_folds}, epoch {epoch + 1}/{n_epochs} — validation...")
+            print(f"Fold {fold + 1}/{k_folds}, epoch {epoch + 1}/{num_epochs} — validation...")
             with torch.no_grad():
                 all_labels = []
                 all_preds = []
