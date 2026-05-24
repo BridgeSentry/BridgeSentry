@@ -1,5 +1,7 @@
 import argparse
 
+import torch
+
 from config.constants import Bridge
 from dataset_generator.generator import GraphDatasetGenerator
 from dataset_generator.types import DATASET_TYPE
@@ -40,9 +42,10 @@ class Cli:
         }
 
         kwargs = {
-            "gpu": not args.no_gpu,
+            "gpu": args.device,
             "kfolds": args.kfolds,
             "num_epochs": args.num_epochs,
+            "early_stopping": args.early_stopping,
             "num_workers": args.num_workers,
             "augment_factor": args.augment_factor,
         }
@@ -150,15 +153,23 @@ class Cli:
             help="Number of training epochs per fold (default: 100)",
         )
         training_parser.add_argument(
+            "--early-stopping",
+            type=bool,
+            default=True,
+            help="Whether to use early stopping based on validation loss (default: True)",
+        )
+        training_parser.add_argument(
             "--learning-rate",
             type=float,
             default=0.01,
             help="Learning rate for the optimizer (default: 0.01)",
         )
         training_parser.add_argument(
-            "--no-gpu",
-            action="store_true",
-            help="Disable GPU usage for training (default: False)",
+            "--device",
+            type=str,
+            choices=["cpu", "cuda"],
+            default="cuda" if torch.cuda.is_available() else "cpu",
+            help="Device to use for training (default: 'cuda' if available, otherwise 'cpu')",
         )
         training_parser.add_argument(
             "--first-layer-channels",

@@ -1,6 +1,14 @@
 from venv import logger
 
-from sklearn.metrics import classification_report
+import numpy as np
+from sklearn.metrics import (
+    accuracy_score,
+    average_precision_score,
+    classification_report,
+    matthews_corrcoef,
+    precision_recall_fscore_support,
+    roc_auc_score,
+)
 import torch
 from torch_geometric.data import Batch, HeteroData
 from torch_geometric.loader import DataLoader
@@ -9,6 +17,7 @@ from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 from collections import defaultdict
 from typing import DefaultDict
 from dataset_generator.cctx_dataset import CrossChainTransactionsDataset
+from dataset_generator.early_stopping import EarlyStopping
 from dataset_generator.feature_extraction import AMOUNTS_INDEX, ARGS_NUM_INDEX, IN_DEGREE_INDEX, INPUT_SIZE_INDEX, OUT_DEGREE_INDEX
 from dataset_generator.model.bridge_defender import BridgeDefender
 from dataset_generator.types import DATASET_TYPE, CanonicalEdgeType, EdgeMetapath
@@ -296,7 +305,10 @@ def aggregate_metapath_features(
 
 def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, model_args: dict, **kwargs):
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    device = device if kwargs.get("gpu", "false") == "true" else "cpu"
+    device = device if kwargs.get("gpu", "cuda") == "cuda" else "cpu"
+    print(torch.cuda.is_available())
+    print(kwargs.get("gpu", "cpu"))
+    print(f"Device: {device}")
 
     dataset = DATASET_CLASS[dataset_type](root=dataset_path, force_reload=force_reload)
     torch.manual_seed(42)
@@ -346,7 +358,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
     # Specifically, we will apply min-max normalization
     # to the node features of each node type across the entire training/validation set, and 
     # then apply the same scale to the test set to avoid data leakage.
-    print(f"Normalizing node features using min-max normalization.")
+    print("Normalizing node features using min-max normalization.")
     max_degrees = torch.zeros(1, dtype=torch.float32)
     max_args_num = torch.zeros(1, dtype=torch.float32)
     max_inputs_size = torch.zeros(1, dtype=torch.float32)
@@ -462,8 +474,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         }
         return pyg_batch
 
-    best_val_loss = float("inf")
-    best_model_state: dict | None = None
+    fold_model_states: list[tuple[int, dict]] = []
 
     for fold, (train_idx, val_idx) in enumerate(kfold.split(X_train_val[:n_real_train_val], y_train_val[:n_real_train_val])):
         # Each fold's train index covers real training graphs only; add synthetic graphs
@@ -493,12 +504,16 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
             lr=model_args.get("learning_rate", 0.01),
             weight_decay=model_args.get("weight_decay", 5e-4),
         )
+        early_stopping = EarlyStopping(patience=10, delta=0, device=device)
 
         train_subset = torch.utils.data.Subset(X_train_val, train_idx)
         val_subset = torch.utils.data.Subset(X_train_val, val_idx)
 
         train_loader = DataLoader(train_subset, batch_size=model_args.get("batch_size", 32), shuffle=True, num_workers=kwargs.get("num_workers", 0), collate_fn=collate_fn)
         val_loader = DataLoader(val_subset, batch_size=model_args.get("batch_size", 32), shuffle=False, num_workers=kwargs.get("num_workers", 0), collate_fn=collate_fn)
+
+        fold_best_val_loss = float("inf")
+        fold_best_model_state: dict | None = None
 
         for epoch in range(num_epochs):
             model.train()
@@ -529,32 +544,23 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
                 avg_val_loss = val_loss / len(val_loader)
                 print(f"  Fold {fold + 1}, epoch {epoch + 1}, val loss: {avg_val_loss:.4f}")
                 print(classification_report(all_labels, all_preds, zero_division=0))
-                if avg_val_loss < best_val_loss:
-                    best_val_loss = avg_val_loss
-                    best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                early_stopping(avg_val_loss, model)
+                if kwargs.get("early_stopping", True) and early_stopping.early_stop:
+                    print(f"Early stopping triggered at epoch {epoch + 1} for fold {fold + 1}.")
+                    break
+                
+                if avg_val_loss < fold_best_val_loss:
+                    fold_best_val_loss = avg_val_loss
+                    fold_best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
 
-    if best_model_state is None:
+        if fold_best_model_state is not None:
+            fold_model_states.append((fold, fold_best_model_state))
+
+    if not fold_model_states:
         print("No model was trained; skipping test evaluation.")
         return
 
-    print("=== Test set evaluation (best model from K-fold CV) ===")
-    best_model = BridgeDefender(
-        metapath_feature_sizes=all_feature_sizes,
-        node_types=dataset[0].node_types,
-        first_layer_channels=model_args.get("first_layer_channels", 128),
-        hidden_channels=model_args.get("hidden_channels", 64),
-        out_channels=model_args.get("out_channels", 4),
-        dropout=model_args.get("dropout", 0.5),
-        input_drop=model_args.get("input_drop", 0.0),
-        att_drop=model_args.get("att_drop", 0.0),
-        n_fp_layers=model_args.get("n_fp_layers", 2),
-        n_mlp_layers=model_args.get("n_mlp_layers", 2),
-        act=model_args.get("act", 'relu'),
-        residual=model_args.get("residual", False),
-        pooling=model_args.get("pooling", 'mean'),
-    ).to(device)
-    best_model.load_state_dict({k: v.to(device) for k, v in best_model_state.items()})
-    best_model.eval()
+    print("=== Test set evaluation (averaged across K-fold models) ===")
 
     test_loader = DataLoader(
         X_test,
@@ -563,17 +569,87 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         num_workers=kwargs.get("num_workers", 0),
         collate_fn=collate_fn,
     )
-    test_loss = 0
-    all_labels = []
-    all_preds = []
-    with torch.no_grad():
-        for data in test_loader:
-            data = data.to(device)
-            output = best_model(data, data.aggregated_features)
-            loss = criterion(output, data.y)
-            test_loss += loss.item()
-            all_labels.extend(data.y.detach().cpu().tolist())
-            all_preds.extend(output.argmax(dim=1).detach().cpu().tolist())
+    label_names = ["normal", "anomaly"]
+    fold_metrics = []
 
-    print(f"Test loss: {test_loss / len(test_loader):.4f}")
-    print(classification_report(all_labels, all_preds, zero_division=0))
+    for fold_idx, model_state in fold_model_states:
+        fold_model = BridgeDefender(
+            metapath_feature_sizes=all_feature_sizes,
+            node_types=dataset[0].node_types,
+            first_layer_channels=model_args.get("first_layer_channels", 128),
+            hidden_channels=model_args.get("hidden_channels", 64),
+            out_channels=model_args.get("out_channels", 4),
+            dropout=model_args.get("dropout", 0.5),
+            input_drop=model_args.get("input_drop", 0.0),
+            att_drop=model_args.get("att_drop", 0.0),
+            n_fp_layers=model_args.get("n_fp_layers", 2),
+            n_mlp_layers=model_args.get("n_mlp_layers", 2),
+            act=model_args.get("act", 'relu'),
+            residual=model_args.get("residual", False),
+            pooling=model_args.get("pooling", 'mean'),
+        ).to(device)
+        fold_model.load_state_dict({k: v.to(device) for k, v in model_state.items()})
+        fold_model.eval()
+
+        test_loss = 0
+        all_labels = []
+        all_probs = []
+        with torch.no_grad():
+            for data in test_loader:
+                data = data.to(device)
+                output = fold_model(data, data.aggregated_features)
+                loss = criterion(output, data.y)
+                test_loss += loss.item()
+                probs = torch.softmax(output, dim=1)
+                all_labels.extend(data.y.detach().cpu().tolist())
+                all_probs.extend(probs.detach().cpu().tolist())
+
+        all_labels = np.array(all_labels)
+        all_probs = np.array(all_probs)
+        all_preds = all_probs.argmax(axis=1)
+
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            all_labels, all_preds, labels=[0, 1], zero_division=0
+        )
+        acc = accuracy_score(all_labels, all_preds)
+        mcc = matthews_corrcoef(all_labels, all_preds)
+        roc_auc = roc_auc_score(all_labels, all_probs[:, 1])
+        pr_auc = average_precision_score(all_labels, all_probs[:, 1])
+        avg_test_loss = test_loss / len(test_loader)
+
+        fold_metrics.append({
+            "test_loss": avg_test_loss,
+            "accuracy": acc,
+            "precision_normal": precision[0],
+            "recall_normal": recall[0],
+            "f1_normal": f1[0],
+            "precision_anomaly": precision[1],
+            "recall_anomaly": recall[1],
+            "f1_anomaly": f1[1],
+            "mcc": mcc,
+            "roc_auc": roc_auc,
+            "pr_auc": pr_auc,
+        })
+
+        print(f"\n--- Fold {fold_idx + 1} test results ---")
+        print(f"Test loss: {avg_test_loss:.4f}")
+        print(classification_report(all_labels, all_preds, target_names=label_names, zero_division=0))
+        print(f"ROC-AUC: {roc_auc:.4f} | PR-AUC: {pr_auc:.4f} | MCC: {mcc:.4f}")
+
+    print("\n=== K-Fold test summary (mean ± std across folds) ===")
+    metric_display = [
+        ("test_loss",         "Test loss"),
+        ("accuracy",          "Accuracy"),
+        ("precision_normal",  "Precision  (normal)"),
+        ("recall_normal",     "Recall     (normal)"),
+        ("f1_normal",         "F1-score   (normal)"),
+        ("precision_anomaly", "Precision  (anomaly)"),
+        ("recall_anomaly",    "Recall     (anomaly)"),
+        ("f1_anomaly",        "F1-score   (anomaly)"),
+        ("roc_auc",           "ROC-AUC"),
+        ("pr_auc",            "PR-AUC"),
+        ("mcc",               "MCC"),
+    ]
+    for key, label in metric_display:
+        values = [m[key] for m in fold_metrics]
+        print(f"  {label:<26} {np.mean(values):.4f} ± {np.std(values):.4f}")
