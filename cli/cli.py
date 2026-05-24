@@ -17,7 +17,8 @@ class Cli:
         force_reload = args.force_reload
 
         # Create generator file
-        generator = GraphDatasetGenerator(bridges, dataset_type, output_folder, force_reload)
+        augment_factor = args.augment_factor
+        generator = GraphDatasetGenerator(bridges, dataset_type, output_folder, force_reload, augment_factor=augment_factor)
         generator.generate_graph_dataset()
 
     def train_model(args):
@@ -35,13 +36,15 @@ class Cli:
             "act": args.activation,
             "residual": args.residual,
             "pooling": args.pooling,
+            "learning_rate": args.learning_rate,
         }
 
         kwargs = {
             "gpu": not args.no_gpu,
             "kfolds": args.kfolds,
             "num_epochs": args.num_epochs,
-            "num_workers": args.num_workers
+            "num_workers": args.num_workers,
+            "augment_factor": args.augment_factor,
         }
 
         train(
@@ -93,6 +96,12 @@ class Cli:
             action="store_true",
             help="Force reload the graph dataset even if it already exists (default: False)",
         )
+        graph_dataset_parser.add_argument(
+            "--augment-factor",
+            type=int,
+            default=0,
+            help="Number of augmented copies per anomaly graph saved in the dataset (0 = disabled, default: 0)",
+        )
         graph_dataset_parser.set_defaults(func=Cli.generate_graph_dataset)
 
         training_parser = subparsers.add_parser(
@@ -139,6 +148,12 @@ class Cli:
             type=int,
             default=100,
             help="Number of training epochs per fold (default: 100)",
+        )
+        training_parser.add_argument(
+            "--learning-rate",
+            type=float,
+            default=0.01,
+            help="Learning rate for the optimizer (default: 0.01)",
         )
         training_parser.add_argument(
             "--no-gpu",
@@ -205,6 +220,12 @@ class Cli:
             default="mean",
             choices=["mean", "max", "sum"],
             help="Pooling method to use for aggregating node embeddings into type-level embeddings",
+        )
+        training_parser.add_argument(
+            "--augment-factor",
+            type=int,
+            default=0,
+            help="Additional runtime augmented copies per anomaly graph at training time (0 = use only pre-generated, default: 0)",
         )
         training_parser.set_defaults(func=Cli.train_model)
 

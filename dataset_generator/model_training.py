@@ -14,6 +14,7 @@ from dataset_generator.model.bridge_defender import BridgeDefender
 from dataset_generator.types import DATASET_TYPE, CanonicalEdgeType, EdgeMetapath
 from repository.db.graph_label import GraphNodeType
 from dataset_generator.types import DATASET_CLASS
+from dataset_generator.augmentation import augment_anomaly_graphs
 
 def get_adjacency_matrices(
     graph: HeteroData,
@@ -300,12 +301,46 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
     dataset = DATASET_CLASS[dataset_type](root=dataset_path, force_reload=force_reload)
     torch.manual_seed(42)
 
+    # Separate pre-generated synthetic (augmented) graphs from real ones.
+    # Synthetic graphs must ONLY appear in the training split, never in the test set.
+    real_graphs = [g for g in dataset if not getattr(g, 'synthetic', False)]
+    synthetic_graphs = [g for g in dataset if getattr(g, 'synthetic', False)]
+    if synthetic_graphs:
+        print(f"Loaded {len(synthetic_graphs)} pre-generated synthetic graphs (will be added to train/val only).")
+
     # First, split the dataset into a training/validation set for each fold using K-Fold cross-validation,
     # and a test set that is held out for final evaluation after training is complete.
     print(f"Splitting dataset into train/val/test sets with test size 15% and {kwargs.get('k_folds', 5)} folds for cross-validation.")
-    X = dataset
-    y = [int(data.y.item()) for data in dataset]
+    X = real_graphs
+    y = [int(data.y.item()) for data in real_graphs]
     X_train_val, X_test, y_train_val, y_test = train_test_split(X, y, test_size=0.15, random_state=42, stratify=y)
+
+    # Record how many REAL graphs are in the pool before appending synthetics.
+    # StratifiedKFold will split only the first n_real_train_val entries; synthetic graphs
+    # are appended after that boundary and routed to folds by source-graph membership.
+    n_real_train_val = len(X_train_val)
+
+    # Append all synthetic graphs to the combined pool (they will never enter the val fold —
+    # see the fold loop below for how this is enforced).
+    if synthetic_graphs:
+        X_train_val = X_train_val + synthetic_graphs
+        y_train_val = y_train_val + [int(g.y.item()) for g in synthetic_graphs]
+        print(f"Loaded {len(synthetic_graphs)} synthetic graphs into combined pool "
+              f"({sum(y_train_val[n_real_train_val:])} anomalies).")
+
+    # Build a mapping from each real graph's position in X_train_val[:n_real_train_val]
+    # to the positions of its synthetic copies (indices >= n_real_train_val).
+    # Synthetic graphs follow the naming convention "{original_tx_hash}_augmented_{n}",
+    # so we recover the source by stripping the last "_augmented_N" suffix.
+    from collections import defaultdict as _defaultdict
+    source_to_synthetic_idx: dict[int, list[int]] = _defaultdict(list)
+    if synthetic_graphs:
+        real_tx_hash_to_idx = {g.tx_hash: i for i, g in enumerate(X_train_val[:n_real_train_val])}
+        for syn_offset, syn_g in enumerate(synthetic_graphs):
+            original_tx_hash = syn_g.tx_hash.rsplit('_augmented_', 1)[0]
+            real_idx = real_tx_hash_to_idx.get(original_tx_hash)
+            if real_idx is not None:
+                source_to_synthetic_idx[real_idx].append(n_real_train_val + syn_offset)
 
     # Now, we need to normalize some numerical features in the dataset. 
     # Specifically, we will apply min-max normalization
@@ -349,6 +384,21 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
                     x[:, ARGS_NUM_INDEX] = x[:, ARGS_NUM_INDEX] / (max_args_num[0] + 1e-12)
                     x[:, INPUT_SIZE_INDEX] = x[:, INPUT_SIZE_INDEX] / (max_inputs_size[0] + 1e-12)
                     x[:, AMOUNTS_INDEX] = x[:, AMOUNTS_INDEX] / (max_amounts[0] + 1e-12)
+
+    # Optional runtime augmentation (applied AFTER normalization so noise operates in [0, 1] space).
+    # Only active when --augment-factor > 0 is passed to the train command.
+    runtime_augment_factor = kwargs.get("augment_factor", 0)
+    if runtime_augment_factor > 0:
+        print(f"Applying runtime augmentation with factor {runtime_augment_factor}.")
+        aug_graphs, aug_labels = augment_anomaly_graphs(
+            X_train_val,
+            y_train_val,
+            augment_factor=runtime_augment_factor,
+        )
+        X_train_val = X_train_val + aug_graphs
+        y_train_val = y_train_val + aug_labels
+        print(f"Training set after runtime augmentation: {len(X_train_val)} graphs "
+              f"({sum(y_train_val)} anomalies).")
 
     # Determine the graph label weights based on the ratio of each label in the dataset
     # Less frequent labels (i.e. anomalies) should have higher weights to penalize
@@ -415,7 +465,14 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
     best_val_loss = float("inf")
     best_model_state: dict | None = None
 
-    for fold, (train_idx, val_idx) in enumerate(kfold.split(X_train_val, y_train_val)):
+    for fold, (train_idx, val_idx) in enumerate(kfold.split(X_train_val[:n_real_train_val], y_train_val[:n_real_train_val])):
+        # Each fold's train index covers real training graphs only; add synthetic graphs
+        # whose *source* real graph also falls in this fold's training partition.
+        # This prevents augmented copies of validation graphs from leaking into training.
+        extra_syn = []
+        for real_idx in train_idx:
+            extra_syn.extend(source_to_synthetic_idx.get(int(real_idx), []))
+        train_idx = list(train_idx) + extra_syn
         model = BridgeDefender(
             metapath_feature_sizes=all_feature_sizes,
             node_types=dataset[0].node_types,
@@ -471,7 +528,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
 
                 avg_val_loss = val_loss / len(val_loader)
                 print(f"  Fold {fold + 1}, epoch {epoch + 1}, val loss: {avg_val_loss:.4f}")
-                print(classification_report(all_labels, all_preds))
+                print(classification_report(all_labels, all_preds, zero_division=0))
                 if avg_val_loss < best_val_loss:
                     best_val_loss = avg_val_loss
                     best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
@@ -519,4 +576,4 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
             all_preds.extend(output.argmax(dim=1).detach().cpu().tolist())
 
     print(f"Test loss: {test_loss / len(test_loader):.4f}")
-    print(classification_report(all_labels, all_preds))
+    print(classification_report(all_labels, all_preds, zero_division=0))

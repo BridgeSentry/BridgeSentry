@@ -9,11 +9,12 @@ import os
 class GraphDatasetGenerator:
     CLASS_NAME = "GraphDatasetGenerator"
     
-    def __init__(self, bridges: list[Bridge], dataset_type: DATASET_TYPE, output_folder: str, force_reload: bool = False):
+    def __init__(self, bridges: list[Bridge], dataset_type: DATASET_TYPE, output_folder: str, force_reload: bool = False, augment_factor: int = 0):
         self.bridges = bridges
         self.dataset_class = DATASET_CLASS[dataset_type]
         self.output_folder = output_folder
         self.force_reload = force_reload
+        self.augment_factor = augment_factor
         self.load_db_modules()
 
     def load_db_modules(self):
@@ -33,7 +34,7 @@ class GraphDatasetGenerator:
 
         # Delegate graph generation to the dataset class so the processing
         # logic stays centralized in one place.
-        dataset = self.dataset_class(root=storage_folder, force_reload=self.force_reload)
+        dataset = self.dataset_class(root=storage_folder, force_reload=self.force_reload, augment_factor=self.augment_factor)
         
         print(f"Generated dataset with {len(dataset)} graphs")
         print("dataset[0]:", dataset[0])  # Print the first graph data object for inspection
