@@ -24,6 +24,7 @@ from dataset_generator.types import DATASET_TYPE, CanonicalEdgeType, EdgeMetapat
 from repository.db.graph_label import GraphNodeType
 from dataset_generator.types import DATASET_CLASS
 from dataset_generator.augmentation import augment_anomaly_graphs
+from dataset_generator.training_reporter import TrainingReporter
 
 def get_adjacency_matrices(
     graph: HeteroData,
@@ -462,6 +463,12 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
     num_epochs = kwargs.get("num_epochs", 100)
     kfold = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=42)
 
+    reporter = TrainingReporter(
+        reports_root="reports",
+        name_prefix=kwargs.get("run_name_prefix", "train"),
+        params={**model_args, **{k: v for k, v in kwargs.items() if k != "run_name_prefix"}},
+    )
+
     criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
 
     def collate_fn(batch: list[HeteroData]) -> Batch:
@@ -531,22 +538,44 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
             with torch.no_grad():
                 all_labels = []
                 all_preds = []
+                all_val_probs = []
                 for data in val_loader:
                     data = data.to(device)
                     output = model(data, data.aggregated_features)
                     loss = criterion(output, data.y)
                     val_loss += loss.item()
+                    probs = torch.softmax(output, dim=1)
                     all_labels.extend(data.y.detach().cpu().tolist())
                     all_preds.extend(output.argmax(dim=1).detach().cpu().tolist())
+                    all_val_probs.extend(probs.detach().cpu().tolist())
 
                 avg_val_loss = val_loss / len(val_loader)
                 print(f"  Fold {fold + 1}, epoch {epoch + 1}, val loss: {avg_val_loss:.4f}")
                 print(classification_report(all_labels, all_preds, zero_division=0))
+
+                all_val_probs_np = np.array(all_val_probs)
+                val_precision, val_recall, val_f1, _ = precision_recall_fscore_support(
+                    all_labels, all_preds, labels=[0, 1], zero_division=0
+                )
+                reporter.record_val_epoch(fold, epoch, {
+                    "val_loss":           avg_val_loss,
+                    "accuracy":           accuracy_score(all_labels, all_preds),
+                    "precision_normal":   val_precision[0],
+                    "recall_normal":      val_recall[0],
+                    "f1_normal":          val_f1[0],
+                    "precision_anomaly":  val_precision[1],
+                    "recall_anomaly":     val_recall[1],
+                    "f1_anomaly":         val_f1[1],
+                    "mcc":                matthews_corrcoef(all_labels, all_preds),
+                    "roc_auc":            roc_auc_score(all_labels, all_val_probs_np[:, 1]),
+                    "pr_auc":             average_precision_score(all_labels, all_val_probs_np[:, 1]),
+                })
+
                 early_stopping(avg_val_loss, model)
                 if kwargs.get("early_stopping", False) and early_stopping.early_stop:
                     print(f"Early stopping triggered at epoch {epoch + 1} for fold {fold + 1}.")
                     break
-                
+
                 if avg_val_loss < fold_best_val_loss:
                     fold_best_val_loss = avg_val_loss
                     fold_best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
@@ -628,6 +657,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
             "roc_auc": roc_auc,
             "pr_auc": pr_auc,
         })
+        reporter.record_test_fold(fold_idx, fold_metrics[-1])
 
         print(f"\n--- Fold {fold_idx + 1} test results ---")
         print(f"Test loss: {avg_test_loss:.4f}")
@@ -651,3 +681,5 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
     for key, label in metric_display:
         values = [m[key] for m in fold_metrics]
         print(f"  {label:<26} {np.mean(values):.4f} ± {np.std(values):.4f}")
+
+    reporter.save(metric_display, k_folds)

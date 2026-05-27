@@ -48,6 +48,7 @@ class Cli:
             "early_stopping": args.early_stopping,
             "num_workers": args.num_workers,
             "augment_factor": args.augment_factor,
+            "run_name_prefix": Cli._build_run_name_prefix(args),
         }
 
         train(
@@ -57,6 +58,44 @@ class Cli:
             model_args=model_args,
             **kwargs
         )
+
+    def _build_run_name_prefix(args) -> str:
+        """Build a short folder-name prefix from CLI args.
+
+        Always includes epochs and augment_factor. Any other param that differs
+        from its argparse default is appended as _{shortname}{value}.
+        """
+        # Params always included in the name
+        parts = [
+            f"epochs{args.num_epochs}",
+            f"augment{args.augment_factor}",
+        ]
+
+        # Params included only when non-default
+        non_default_params = [
+            ("kfolds",              5,     "k"),
+            ("learning_rate",       0.01,  "lr"),
+            ("first_layer_channels",128,   "fl"),
+            ("hidden_channels",     64,    "hc"),
+            ("dropout",             0.5,   "do"),
+            ("input_drop",          0.0,   "id"),
+            ("att_drop",            0.0,   "ad"),
+            ("n_fp_layers",         2,     "fp"),
+            ("n_mlp_layers",        2,     "mlp"),
+            ("activation",          "relu","act"),
+            ("pooling",             "mean","pool"),
+            ("residual",            False, "res"),
+            ("early_stopping",      False, "es"),
+        ]
+        for attr, default, short in non_default_params:
+            value = getattr(args, attr)
+            if value != default:
+                if isinstance(value, bool):
+                    parts.append(short)
+                else:
+                    parts.append(f"{short}{value}")
+
+        return "train_" + "_".join(parts)
 
     def cli():
         parser = argparse.ArgumentParser(description="Bridge Defender CLI")
