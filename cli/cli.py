@@ -154,8 +154,7 @@ class Cli:
         )
         training_parser.add_argument(
             "--early-stopping",
-            type=bool,
-            default=True,
+            action="store_true",
             help="Whether to use early stopping based on validation loss (default: True)",
         )
         training_parser.add_argument(

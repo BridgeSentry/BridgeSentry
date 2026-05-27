@@ -306,9 +306,7 @@ def aggregate_metapath_features(
 def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, model_args: dict, **kwargs):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     device = device if kwargs.get("gpu", "cuda") == "cuda" else "cpu"
-    print(torch.cuda.is_available())
-    print(kwargs.get("gpu", "cpu"))
-    print(f"Device: {device}")
+    print("Early stopping:", kwargs.get("early_stopping", False))
 
     dataset = DATASET_CLASS[dataset_type](root=dataset_path, force_reload=force_reload)
     torch.manual_seed(42)
@@ -545,7 +543,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
                 print(f"  Fold {fold + 1}, epoch {epoch + 1}, val loss: {avg_val_loss:.4f}")
                 print(classification_report(all_labels, all_preds, zero_division=0))
                 early_stopping(avg_val_loss, model)
-                if kwargs.get("early_stopping", True) and early_stopping.early_stop:
+                if kwargs.get("early_stopping", False) and early_stopping.early_stop:
                     print(f"Early stopping triggered at epoch {epoch + 1} for fold {fold + 1}.")
                     break
                 
