@@ -94,6 +94,12 @@ class SingleTransactionsDataset(InMemoryDataset):
         offset = index_entry['offset']
         data_list = _load_data(file_path)
         return data_list[offset]
+    
+    def get_by_tx_hash(self, tx_hash) -> HeteroData:
+        for idx, entry in enumerate(self.data_index):
+            if entry['tx_hash'] == tx_hash:
+                return self.get(idx)
+        raise ValueError(f"Graph with tx_hash {tx_hash} not found in dataset.")
 
     def convert_datatype_to_csv(self, items, columns, output_file):
         output_path = os.path.join(self.raw_dir, output_file)

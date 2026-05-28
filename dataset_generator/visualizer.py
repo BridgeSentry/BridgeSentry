@@ -77,4 +77,3 @@ def visualize_graph(graph_data):
     )
     nx.draw_networkx_edge_labels(graph, pos, edge_labels=edge_labels)
     plt.show()
-    input("Press Enter to continue...")
