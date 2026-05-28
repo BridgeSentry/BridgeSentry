@@ -558,17 +558,17 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
                     all_labels, all_preds, labels=[0, 1], zero_division=0
                 )
                 reporter.record_val_epoch(fold, epoch, {
-                    "val_loss":           avg_val_loss,
-                    "accuracy":           accuracy_score(all_labels, all_preds),
-                    "precision_normal":   val_precision[0],
-                    "recall_normal":      val_recall[0],
-                    "f1_normal":          val_f1[0],
-                    "precision_anomaly":  val_precision[1],
-                    "recall_anomaly":     val_recall[1],
-                    "f1_anomaly":         val_f1[1],
-                    "mcc":                matthews_corrcoef(all_labels, all_preds),
-                    "roc_auc":            roc_auc_score(all_labels, all_val_probs_np[:, 1]),
-                    "pr_auc":             average_precision_score(all_labels, all_val_probs_np[:, 1]),
+                    "val_loss": avg_val_loss,
+                    "accuracy": accuracy_score(all_labels, all_preds),
+                    "precision_normal": val_precision[0],
+                    "recall_normal": val_recall[0],
+                    "f1_normal": val_f1[0],
+                    "precision_anomaly": val_precision[1],
+                    "recall_anomaly": val_recall[1],
+                    "f1_anomaly": val_f1[1],
+                    "mcc": matthews_corrcoef(all_labels, all_preds),
+                    "roc_auc": roc_auc_score(all_labels, all_val_probs_np[:, 1]),
+                    "pr_auc": average_precision_score(all_labels, all_val_probs_np[:, 1]),
                 })
 
                 early_stopping(avg_val_loss, model)

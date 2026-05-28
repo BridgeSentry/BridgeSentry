@@ -56,9 +56,10 @@ class SemanticFusionTransformer(nn.Module):
         if mask is not None:
             assert mask.size() == torch.Size([B, M])
 
-        q = self.query(x).view(B, M, H, -1).permute(0, 2, 1, 3)  # [B, H, M, D//4]
-        k = self.key(x).view(B, M, H, -1).permute(0, 2, 3, 1)    # [B, H, D//4, M]
-        v = self.value(x).view(B, M, H, -1).permute(0, 2, 1, 3)  # [B, H, M, D//4]
+        D = C // (H * 4)
+        q = self.query(x).view(B, M, H, D).permute(0, 2, 1, 3)   # [B, H, M, D//4]
+        k = self.key(x).view(B, M, H, D).permute(0, 2, 3, 1)     # [B, H, D//4, M]
+        v = self.value(x).view(B, M, H, D * 4).permute(0, 2, 1, 3)  # [B, H, M, C//H]
 
         # Calculate mutual attention scores and apply dropout
         beta = F.softmax(self.act(q @ k / math.sqrt(q.size(-1))), dim=-1)  # [B, H, M, M(normalized)]
@@ -171,7 +172,7 @@ class SeHGNN(nn.Module):
 
         # Transformer-based semantic Fusion
         x = self.semantic_fusion(x).transpose(1, 2)
-        x = self.fc_after_concat(x.reshape(batch_size, -1))
+        x = self.fc_after_concat(x.reshape(batch_size, self.fc_after_concat.in_features))
 
         # Residual connection over target node features
         if self.residual:

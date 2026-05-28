@@ -84,6 +84,8 @@ class TrainingReporter:
     # Private helpers
     # ------------------------------------------------------------------
 
+    # Save per-epoch validation metrics to CSVs, one file per metric, with the
+    # first column as epoch number and subsequent columns as fold values.
     def _save_val_csvs(self, k_folds: int) -> None:
         for metric in self.VAL_METRICS:
             fold_data = self.val_history[metric]
@@ -107,6 +109,8 @@ class TrainingReporter:
                 writer.writerow(header)
                 writer.writerows(rows)
 
+    # Generate and save line charts for each validation metric, with epochs on
+    # the x-axis and metric values on the y-axis, one line per fold.
     def _save_val_charts(self, k_folds: int) -> None:
         for metric in self.VAL_METRICS:
             fold_data = self.val_history[metric]
@@ -133,6 +137,7 @@ class TrainingReporter:
             fig.savefig(path, format="svg")
             plt.close(fig)
 
+    # Save per-fold test metrics to a single CSV, with one row per fold and columns for each metric.
     def _save_test_csv(self) -> None:
         path = os.path.join(self.run_dir, "test_metrics.csv")
         with open(path, "w", newline="") as f:
@@ -144,6 +149,7 @@ class TrainingReporter:
                 row["fold"] = f"fold_{int(entry['fold']) + 1}"
                 writer.writerow(row)
 
+    # Register the output print lines for the test summary into a text file.
     def _save_summary_txt(self, metric_display: list[tuple[str, str]]) -> None:
         lines = ["=== K-Fold test summary (mean ± std across folds) ===\n"]
         for key, label in metric_display:
