@@ -7,6 +7,7 @@ class Bridge(Enum):
     CCIP = "ccip"
     ACROSS = "across"
     POLYGON = "polygon"
+    POLYNETWORK = "polynetwork"
     RONIN = "ronin"
     OMNIBRIDGE = "omnibridge"
     DEBRIDGE = "debridge"

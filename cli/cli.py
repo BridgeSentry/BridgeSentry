@@ -194,7 +194,7 @@ class Cli:
         training_parser.add_argument(
             "--early-stopping",
             action="store_true",
-            help="Whether to use early stopping based on validation loss (default: True)",
+            help="Whether to use early stopping based on validation loss (default: False)",
         )
         training_parser.add_argument(
             "--learning-rate",
@@ -213,62 +213,62 @@ class Cli:
             "--first-layer-channels",
             type=int,
             default=128,
-            help="Number of channels in the first layer of SeHGNNConv",
+            help="Number of channels in the first layer of SeHGNNConv (default: 128)",
         )
         training_parser.add_argument(
             "--hidden-channels",
             type=int,
             default=64,
-            help="Number of hidden channels in SeHGNNConv and MLP layers",
+            help="Number of hidden channels in SeHGNNConv and MLP layers (default: 64)",
         )
         training_parser.add_argument(
             "--dropout",
             type=float,
             default=0.5,
-            help="Dropout rate for SeHGNNConv and MLP layers",
+            help="Dropout rate for SeHGNNConv and MLP layers (default: 0.5)",
         )
         training_parser.add_argument(
             "--input-drop",
             type=float,
             default=0.0,
-            help="Dropout rate for input features",
+            help="Dropout rate for input features (default: 0.0)",
         )
         training_parser.add_argument(
             "--att-drop",
             type=float,
             default=0.0,
-            help="Dropout rate for attention weights in the semantic transformer",
+            help="Dropout rate for attention weights in the semantic transformer (default: 0.0)",
         )
         training_parser.add_argument(
             "--n-fp-layers",
             type=int,
             default=2,
-            help="Number of feature propagation layers in SeHGNNConv",
+            help="Number of feature propagation layers in SeHGNNConv (default: 2)",
         )
         training_parser.add_argument(
             "--n-mlp-layers",
             type=int,
             default=2,
-            help="Number of layers in the final MLP classifier",
+            help="Number of layers in the final MLP classifier (default: 2)",
         )
         training_parser.add_argument(
             "--activation",
             type=str,
             default="relu",
             choices=["relu", "leaky_relu", "sigmoid", "none"],
-            help="Activation function to use in SeHGNNConv and MLP layers",
+            help="Activation function to use in SeHGNNConv and MLP layers (default: relu)",
         )
         training_parser.add_argument(
             "--residual",
             action="store_true",
-            help="Whether to use residual connections in SeHGNNConv layers",
+            help="If used, enables residual connections in SeHGNNConv layers",
         )
         training_parser.add_argument(
             "--pooling",
             type=str,
             default="mean",
             choices=["mean", "max", "sum"],
-            help="Pooling method to use for aggregating node embeddings into type-level embeddings",
+            help="Pooling method to use for aggregating node embeddings into type-level embeddings (default: mean)",
         )
         training_parser.add_argument(
             "--augment-factor",

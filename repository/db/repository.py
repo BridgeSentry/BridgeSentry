@@ -37,6 +37,11 @@ class GraphMappingBlockchainRepository(BaseRepository):
                 session.commit()
                 return graph_mapping
             return None
+        
+    def get_by_bridge(self, bridge: str):
+        with self.get_session() as session:
+            return session.query(GraphMappingBlockchain).filter(GraphMappingBlockchain.bridge == bridge).all()
+
 
 class GraphMappingCrossChainRepository(BaseRepository):
     def __init__(self, session_factory):
@@ -65,6 +70,10 @@ class GraphMappingCrossChainRepository(BaseRepository):
                     GraphMappingCrossChain.target_chain == chain, 
                     GraphMappingCrossChain.destination_tx_hash == tx_hash
                 ).first()
+            
+    def get_by_bridge(self, bridge: str):
+        with self.get_session() as session:
+            return session.query(GraphMappingCrossChain).filter(GraphMappingCrossChain.bridge == bridge).all()
 
 class GraphNodeRepository(BaseRepository):
     def __init__(self, session_factory):
@@ -98,6 +107,10 @@ class GraphNodeRepository(BaseRepository):
     def get_router_node_by_graph_id(self, graph_id: int):
         with self.get_session() as session:
             return session.query(GraphNode).filter(GraphNode.chain_graph_id == graph_id, GraphNode.node_type == GraphNodeType.ROUTER.value).first()
+
+    def get_by_bridge(self, bridge: str):
+        with self.get_session() as session:
+            return session.query(GraphNode).filter(GraphNode.bridge == bridge).all()
 
     def get_max_in_degree_excluding_non_normal_cross_chain(self):
         with self.get_session() as session:
@@ -154,3 +167,7 @@ class GraphEdgeRepository(BaseRepository):
                 edge.cctx_graph_id = cctx_id
             session.commit()
             return edges
+
+    def get_by_bridge(self, bridge: str):
+        with self.get_session() as session:
+            return session.query(GraphEdge).filter(GraphEdge.bridge == bridge).all()

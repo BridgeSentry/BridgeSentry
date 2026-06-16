@@ -174,7 +174,7 @@ class FeatureExtractor:
         return np.array([attr.get("input_size", 0) for attr in node_attributes], dtype=int).reshape(-1, 1)
 
     def encode_amounts(self, nodes):
-        return np.array([float(np.log1p(float(node.amount_usd))) if node.amount_usd is not None and not np.isnan(float(node.amount_usd)) else 0 for node in nodes], dtype=np.float32).reshape(-1, 1)
+        return np.array([float(np.log1p(float(node.amount_usd))) if node.amount_usd is not None and not np.isnan(float(node.amount_usd)) else -1 for node in nodes], dtype=np.float32).reshape(-1, 1)
 
     # ======== Validator-specific node feature encoding methods ========
     def encode_src_dst_blockchains_and_orders(self, node_attributes):
