@@ -523,6 +523,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         for epoch in range(num_epochs):
             model.train()
             print(f"Fold {fold + 1}/{k_folds}, epoch {epoch + 1}/{num_epochs} — training...")
+            train_loss = 0.0
             for data in train_loader:
                 data = data.to(device)
                 output = model(data, data.aggregated_features)
@@ -530,7 +531,8 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
                 loss.backward()
                 optimizer.step()
                 optimizer.zero_grad()
-                # print(f"  Fold {fold + 1}, epoch {epoch + 1}, loss: {loss.item():.4f}")
+                train_loss += loss.item()
+            avg_train_loss = train_loss / len(train_loader)
 
             model.eval()
             val_loss = 0
@@ -558,6 +560,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
                     all_labels, all_preds, labels=[0, 1], zero_division=0
                 )
                 reporter.record_val_epoch(fold, epoch, {
+                    "train_loss": avg_train_loss,
                     "val_loss": avg_val_loss,
                     "accuracy": accuracy_score(all_labels, all_preds),
                     "precision_normal": val_precision[0],

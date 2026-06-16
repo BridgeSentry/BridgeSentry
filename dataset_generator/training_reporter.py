@@ -13,6 +13,7 @@ class TrainingReporter:
 
     # Validation metrics recorded each epoch (matches keys in record_val_epoch)
     VAL_METRICS = [
+        "train_loss",
         "val_loss",
         "accuracy",
         "precision_normal",
@@ -129,7 +130,7 @@ class TrainingReporter:
 
             ax.set_xlabel("Epoch")
             ax.set_ylabel(metric.replace("_", " ").title())
-            ax.set_title(f"Validation {metric.replace('_', ' ').title()} per Epoch")
+            ax.set_title(f"{metric.replace('_', ' ').title()} per Epoch")
             ax.legend()
             fig.tight_layout()
 
