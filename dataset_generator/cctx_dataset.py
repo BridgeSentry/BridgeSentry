@@ -9,8 +9,10 @@ import os
 from torch_geometric.data import InMemoryDataset, HeteroData
 from tqdm import tqdm
 
-from dataset_generator.feature_extraction import CROSS_CHAIN_LABEL_MAP, FeatureExtractor
+from config.constants import Bridge
+from dataset_generator.feature_extraction import NODE_TYPE_FEATURE_DIMS, FeatureExtractor
 from repository.database import DBSession
+from repository.db.graph_label import CrossChainGraphLabel
 from repository.db.models import GraphEdge, GraphMappingBlockchain, GraphMappingCrossChain, GraphNode
 from repository.db.repository import GraphEdgeRepository, GraphMappingBlockchainRepository, GraphMappingCrossChainRepository, GraphNodeRepository
 from utils.utils import log_to_cli
@@ -42,6 +44,9 @@ class CrossChainTransactionsDataset(InMemoryDataset):
         self.blockchain_mapping_repo = GraphMappingBlockchainRepository(DBSession)
         self.graph_nodes_repo = GraphNodeRepository(DBSession)
         self.graph_edges_repo = GraphEdgeRepository(DBSession)
+
+        os.makedirs(os.path.join(root, 'raw'), exist_ok=True)
+        os.makedirs(os.path.join(root, 'processed'), exist_ok=True)
         super().__init__(root, transform, pre_transform, pre_filter, force_reload)
 
     @property
@@ -62,7 +67,7 @@ class CrossChainTransactionsDataset(InMemoryDataset):
                 for row in reader:
                     self._data_index.append({
                         'cctx_graph_id': row['cctx_graph_id'],
-                        'file_path': row['file_path'],
+                        'file_name': row['file_name'],
                         'offset': int(row['offset']),
                     })
         return self._data_index
@@ -82,7 +87,7 @@ class CrossChainTransactionsDataset(InMemoryDataset):
     
     def get(self, idx) -> HeteroData:
         index_entry = self.data_index[idx]
-        file_path = index_entry['file_path']
+        file_path = os.path.join(self.processed_dir, index_entry['file_name'])
         offset = index_entry['offset']
         data_list = _load_data(file_path)
         return data_list[offset]
@@ -105,19 +110,19 @@ class CrossChainTransactionsDataset(InMemoryDataset):
 
     def download(self):
         log_to_cli("Exporting data from database to CSV files... ")
-        cctx_mappings = self.cross_chain_mapping_repo.get_all()
+        cctx_mappings = self.cross_chain_mapping_repo.get_by_bridge(Bridge.POLYNETWORK.value)
         cctx_columns = [col.name for col in GraphMappingCrossChain.__table__.columns]
         self.convert_datatype_to_csv(cctx_mappings, cctx_columns, "cross_chain_mappings.csv")
 
-        blockchain_tx_mappings = self.blockchain_mapping_repo.get_all()
+        blockchain_tx_mappings = self.blockchain_mapping_repo.get_by_bridge(Bridge.POLYNETWORK.value)
         blockchain_columns = [col.name for col in GraphMappingBlockchain.__table__.columns]
         self.convert_datatype_to_csv(blockchain_tx_mappings, blockchain_columns, "blockchain_mappings.csv")
 
-        nodes = self.graph_nodes_repo.get_all()
+        nodes = self.graph_nodes_repo.get_by_bridge(Bridge.POLYNETWORK.value)
         node_columns = [col.name for col in GraphNode.__table__.columns]
         self.convert_datatype_to_csv(nodes, node_columns, "graph_nodes.csv")
 
-        edges = self.graph_edges_repo.get_all()
+        edges = self.graph_edges_repo.get_by_bridge(Bridge.POLYNETWORK.value)
         edge_columns = [col.name for col in GraphEdge.__table__.columns]
         self.convert_datatype_to_csv(edges, edge_columns, "graph_edges.csv")
 
@@ -132,13 +137,13 @@ class CrossChainTransactionsDataset(InMemoryDataset):
         index_path = os.path.join(self.processed_dir, 'data_index.csv')
         index_file = open(index_path, 'w')
         writer = csv.writer(index_file)
-        writer.writerow(['index', 'cctx_graph_id', 'file_path', 'offset'])
+        writer.writerow(['index', 'cctx_graph_id', 'file_name', 'offset'])
 
         # We want to save up to 50 graphs in each file, so that:
         # a) We don't have a huge file that takes a long time to load / generate, and
         # b) storing all graphs in a single file would be too memory intensive during generation.
         compressed_file_number = 0
-        graph_file_path = os.path.join(self.processed_dir, f'graph_data_{compressed_file_number}.pt')
+        graph_file_name = f'graph_data_{compressed_file_number}.pt'
         offset = 0
         node_types = set()
         edge_types = set()
@@ -157,6 +162,8 @@ class CrossChainTransactionsDataset(InMemoryDataset):
 
             # Process and save the graph data
             graph_data = self.process_heterogeneous_graph(nodes, edges, label, feature_extractor)
+            graph_data.bridge = row['bridge']
+            graph_data.tx_hash = str(row['cctx_id'])
             if self.pre_filter is not None and not self.pre_filter(graph_data):
                 continue
             if self.pre_transform is not None:
@@ -164,7 +171,7 @@ class CrossChainTransactionsDataset(InMemoryDataset):
 
             # Save the graph position in the index file
             data_list.append(graph_data)
-            writer.writerow([index, cctx_graph_id, graph_file_path, offset])
+            writer.writerow([index, cctx_graph_id, graph_file_name, offset])
             offset += 1
 
             # Add the new node and edge types to the sets
@@ -173,17 +180,18 @@ class CrossChainTransactionsDataset(InMemoryDataset):
 
             # Save the graph data in batches of 50 to avoid memory issues
             if len(data_list) >= 50:
+                graph_file_path = os.path.join(self.processed_dir, graph_file_name)
                 torch.save(data_list, graph_file_path)
                 data_list = []
                 compressed_file_number += 1
-                graph_file_path = os.path.join(self.processed_dir, f'graph_data_{compressed_file_number}.pt')
+                graph_file_name = f'graph_data_{compressed_file_number}.pt'
                 offset = 0
 
             pbar.update(1)
 
         # Ensure any remaining graphs are saved
         if len(data_list) > 0:
-            torch.save(data_list, graph_file_path)
+            torch.save(data_list, os.path.join(self.processed_dir, graph_file_name))
 
         pbar.close()
         index_file.close()
@@ -210,6 +218,14 @@ class CrossChainTransactionsDataset(InMemoryDataset):
             node_id_to_local_idx_by_type[ntype] = dict(
                 zip(ntype_nodes_df["node_id"].tolist(), ntype_nodes_df.index.tolist())
             )
+
+        # Ensure every known node type has an x tensor (even if empty) so all graphs share
+        # the same schema. This is required for correct PyG batching and avoids
+        # 'NodeStorage has no attribute x' errors in the model for absent node types.
+        for ntype, dim in NODE_TYPE_FEATURE_DIMS.items():
+            if ntype not in node_id_to_local_idx_by_type:
+                graph_data[ntype].x = torch.zeros((0, dim), dtype=torch.float)
+                node_id_to_local_idx_by_type[ntype] = {}
 
         # 2. Process edges
         if not edges.empty:
@@ -247,8 +263,8 @@ class CrossChainTransactionsDataset(InMemoryDataset):
 
                 graph_data[(src_type, edge_type, dst_type)].edge_index = edge_index
 
-        # 3. Graph-level label
-        graph_data.y = torch.tensor([CROSS_CHAIN_LABEL_MAP[label]], dtype=torch.long)
+        # 3. Graph-level label (binary: 0=normal, 1=any anomaly type)
+        graph_data.y = torch.tensor([0 if label == CrossChainGraphLabel.NORMAL.value else 1], dtype=torch.long)
         graph_data.y_str = label  # Keep the original string label for reference
 
         return graph_data
