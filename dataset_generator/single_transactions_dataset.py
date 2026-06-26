@@ -9,8 +9,9 @@ import os
 from torch_geometric.data import InMemoryDataset, HeteroData
 from tqdm import tqdm
 
-from dataset_generator.feature_extraction import NODE_TYPE_FEATURE_DIMS, SINGLE_CHAIN_LABEL_MAP, FeatureExtractor
+from dataset_generator.feature_extraction import get_node_type_feature_dims, SINGLE_CHAIN_LABEL_MAP, FeatureExtractor
 from repository.database import DBSession
+from repository.db.graph_label import BlockchainGraphLabel
 from repository.db.models import GraphEdge, GraphMappingBlockchain, GraphMappingCrossChain, GraphNode
 from repository.db.repository import GraphEdgeRepository, GraphMappingBlockchainRepository, GraphMappingCrossChainRepository, GraphNodeRepository
 from utils.utils import log_to_cli
@@ -123,11 +124,11 @@ class SingleTransactionsDataset(InMemoryDataset):
         blockchain_columns = [col.name for col in GraphMappingBlockchain.__table__.columns]
         self.convert_datatype_to_csv(blockchain_tx_mappings, blockchain_columns, "blockchain_mappings.csv")
 
-        nodes = self.graph_nodes_repo.get_all()
+        nodes = self.graph_nodes_repo.get_all_non_cctx()
         node_columns = [col.name for col in GraphNode.__table__.columns]
         self.convert_datatype_to_csv(nodes, node_columns, "graph_nodes.csv")
 
-        edges = self.graph_edges_repo.get_all()
+        edges = self.graph_edges_repo.get_all_non_cctx()
         edge_columns = [col.name for col in GraphEdge.__table__.columns]
         self.convert_datatype_to_csv(edges, edge_columns, "graph_edges.csv")
 
@@ -170,13 +171,6 @@ class SingleTransactionsDataset(InMemoryDataset):
             nodes = nodes_df[nodes_df['chain_graph_id'] == blockchain_graph_id]
             edges = edges_df[edges_df['chain_graph_id'] == blockchain_graph_id]
             label = row['label']
-
-            # Check if there is a 'transaction' edge type in this graph, if so skip it
-            #! TESTING PURPOSES ONLY - REMOVE THIS CHECK LATER
-            # if 'transaction' in edges['edge_type'].values:
-            #     pbar.update(1)
-            #     continue
-
 
             # Process and save the graph data
             graph_data = self.process_heterogeneous_graph(nodes, edges, label, feature_extractor)
@@ -295,7 +289,7 @@ class SingleTransactionsDataset(InMemoryDataset):
         # Ensure every known node type has an x tensor (even if empty) so all graphs share
         # the same schema. This is required for correct PyG batching and avoids
         # 'NodeStorage has no attribute x' errors in the model for absent node types.
-        for ntype, dim in NODE_TYPE_FEATURE_DIMS.items():
+        for ntype, dim in get_node_type_feature_dims(single_chain=True).items():
             if ntype not in node_id_to_local_idx_by_type:
                 graph_data[ntype].x = torch.zeros((0, dim), dtype=torch.float)
                 node_id_to_local_idx_by_type[ntype] = {}
@@ -337,7 +331,7 @@ class SingleTransactionsDataset(InMemoryDataset):
                 graph_data[(src_type, edge_type, dst_type)].edge_index = edge_index
 
         # 3. Graph-level label
-        graph_data.y = torch.tensor([SINGLE_CHAIN_LABEL_MAP[label]], dtype=torch.long)
+        graph_data.y = torch.tensor([0 if label == BlockchainGraphLabel.NORMAL.value else 1], dtype=torch.long)
         graph_data.y_str = label  # Keep the original string label for reference
 
         return graph_data

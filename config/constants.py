@@ -13,3 +13,8 @@ class Bridge(Enum):
     DEBRIDGE = "debridge"
     MAYAN = "mayan"
     NOMAD = "nomad"
+    HARMONY = "harmony"
+    METERIO = "meterio"
+    QUBIT = "qubit"
+    THORCHAIN = "thorchain"
+    THORCHAIN2 = "thorchain2"

@@ -10,7 +10,7 @@ from torch_geometric.data import InMemoryDataset, HeteroData
 from tqdm import tqdm
 
 from config.constants import Bridge
-from dataset_generator.feature_extraction import NODE_TYPE_FEATURE_DIMS, FeatureExtractor
+from dataset_generator.feature_extraction import get_node_type_feature_dims, FeatureExtractor
 from repository.database import DBSession
 from repository.db.graph_label import CrossChainGraphLabel
 from repository.db.models import GraphEdge, GraphMappingBlockchain, GraphMappingCrossChain, GraphNode
@@ -110,19 +110,19 @@ class CrossChainTransactionsDataset(InMemoryDataset):
 
     def download(self):
         log_to_cli("Exporting data from database to CSV files... ")
-        cctx_mappings = self.cross_chain_mapping_repo.get_by_bridge(Bridge.POLYNETWORK.value)
+        cctx_mappings = self.cross_chain_mapping_repo.get_all()
         cctx_columns = [col.name for col in GraphMappingCrossChain.__table__.columns]
         self.convert_datatype_to_csv(cctx_mappings, cctx_columns, "cross_chain_mappings.csv")
 
-        blockchain_tx_mappings = self.blockchain_mapping_repo.get_by_bridge(Bridge.POLYNETWORK.value)
+        blockchain_tx_mappings = self.blockchain_mapping_repo.get_all_cctx()
         blockchain_columns = [col.name for col in GraphMappingBlockchain.__table__.columns]
         self.convert_datatype_to_csv(blockchain_tx_mappings, blockchain_columns, "blockchain_mappings.csv")
 
-        nodes = self.graph_nodes_repo.get_by_bridge(Bridge.POLYNETWORK.value)
+        nodes = self.graph_nodes_repo.get_all_cctx()
         node_columns = [col.name for col in GraphNode.__table__.columns]
         self.convert_datatype_to_csv(nodes, node_columns, "graph_nodes.csv")
 
-        edges = self.graph_edges_repo.get_by_bridge(Bridge.POLYNETWORK.value)
+        edges = self.graph_edges_repo.get_all_cctx()
         edge_columns = [col.name for col in GraphEdge.__table__.columns]
         self.convert_datatype_to_csv(edges, edge_columns, "graph_edges.csv")
 
@@ -222,7 +222,7 @@ class CrossChainTransactionsDataset(InMemoryDataset):
         # Ensure every known node type has an x tensor (even if empty) so all graphs share
         # the same schema. This is required for correct PyG batching and avoids
         # 'NodeStorage has no attribute x' errors in the model for absent node types.
-        for ntype, dim in NODE_TYPE_FEATURE_DIMS.items():
+        for ntype, dim in get_node_type_feature_dims(single_chain=False).items():
             if ntype not in node_id_to_local_idx_by_type:
                 graph_data[ntype].x = torch.zeros((0, dim), dtype=torch.float)
                 node_id_to_local_idx_by_type[ntype] = {}

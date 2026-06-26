@@ -9,7 +9,7 @@ import os
 from torch_geometric.data import InMemoryDataset, HeteroData
 from tqdm import tqdm
 
-from dataset_generator.feature_extraction import NODE_TYPE_FEATURE_DIMS, SINGLE_CHAIN_LABEL_MAP, FeatureExtractor
+from dataset_generator.feature_extraction import get_node_type_feature_dims, SINGLE_CHAIN_LABEL_MAP, FeatureExtractor
 from repository.database import DBSession
 from repository.db.models import GraphEdge, GraphMappingBlockchain, GraphMappingCrossChain, GraphNode
 from repository.db.repository import GraphEdgeRepository, GraphMappingBlockchainRepository, GraphMappingCrossChainRepository, GraphNodeRepository
@@ -265,7 +265,7 @@ class MixedTransactionsDataset(InMemoryDataset):
         # Ensure every known node type has an x tensor (even if empty) so all graphs share
         # the same schema. This is required for correct PyG batching and avoids
         # 'NodeStorage has no attribute x' errors in the model for absent node types.
-        for ntype, dim in NODE_TYPE_FEATURE_DIMS.items():
+        for ntype, dim in get_node_type_feature_dims(single_chain=True).items():
             if ntype not in node_id_to_local_idx_by_type:
                 graph_data[ntype].x = torch.zeros((0, dim), dtype=torch.float)
                 node_id_to_local_idx_by_type[ntype] = {}

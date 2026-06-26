@@ -536,7 +536,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
 
             model.eval()
             val_loss = 0
-            print(f"Fold {fold + 1}/{k_folds}, epoch {epoch + 1}/{num_epochs} — validation...")
+            #print(f"Fold {fold + 1}/{k_folds}, epoch {epoch + 1}/{num_epochs} — validation...")
             with torch.no_grad():
                 all_labels = []
                 all_preds = []
