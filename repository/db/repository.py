@@ -20,6 +20,12 @@ class GraphMappingBlockchainRepository(BaseRepository):
             return session.query(GraphMappingBlockchain).filter(
                 GraphMappingBlockchain.cctx_graph_id.is_(None)
             ).all()
+        
+    def get_all_cctx(self):
+        with self.get_session() as session:
+            return session.query(GraphMappingBlockchain).filter(
+                GraphMappingBlockchain.cctx_graph_id.is_not(None)
+            ).all()
 
     def get_by_id(self, graph_id: int):
         with self.get_session() as session:
@@ -78,6 +84,14 @@ class GraphMappingCrossChainRepository(BaseRepository):
 class GraphNodeRepository(BaseRepository):
     def __init__(self, session_factory):
         super().__init__(GraphNode, session_factory)
+
+    def get_all_cctx(self):
+        with self.get_session() as session:
+            return session.query(GraphNode).filter(GraphNode.cctx_graph_id.is_not(None)).all()
+        
+    def get_all_non_cctx(self):
+        with self.get_session() as session:
+            return session.query(GraphNode).filter(GraphNode.cctx_graph_id.is_(None)).all()
 
     def get_by_address(self, graph_id: int, address: str):
         with self.get_session() as session:
@@ -151,6 +165,15 @@ class GraphNodeRepository(BaseRepository):
 class GraphEdgeRepository(BaseRepository):
     def __init__(self, session_factory):
         super().__init__(GraphEdge, session_factory)
+
+    def get_all_cctx(self):
+        with self.get_session() as session:
+            return session.query(GraphEdge).filter(GraphEdge.cctx_graph_id.is_not(None)).all()
+        
+    def get_all_non_cctx(self):
+        with self.get_session() as session:
+            return session.query(GraphEdge).filter(GraphEdge.cctx_graph_id.is_(None)).all()
+
 
     def get_by_connections(self, graph_id: int, source_id: int, target_id: int):
         with self.get_session() as session:
