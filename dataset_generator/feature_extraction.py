@@ -16,14 +16,19 @@ NODE_TYPE_MAP = {
 }
 
 # Static feature dimensionality per node type (matches compute_node_features_type output widths).
-NODE_TYPE_FEATURE_DIMS = {
-    GraphNodeType.USER.value: 9,          # in_deg, out_deg, stage(3), blockchain(4)
-    GraphNodeType.ROUTER.value: 9,
-    GraphNodeType.TOKEN.value: 17,        # + token_symbol(8)
-    GraphNodeType.OTHER_ACCOUNT.value: 9,
-    GraphNodeType.LOG_EVENT.value: 25,    # + event_order(1), event_type(4), args_num(1), input_size(1), amounts(1), token_symbol(8)
-    GraphNodeType.VALIDATOR.value: 12,    # + src_blockchain(4), dst_blockchain(4), order(2)
-}
+# When single_chain=True, the 2-bit blockchain_stage feature is omitted (always [0,0] for single-chain nodes).
+def get_node_type_feature_dims(single_chain: bool = False) -> dict:
+    stage_dim = 0 if single_chain else 2
+    return {
+        GraphNodeType.USER.value:          6 + stage_dim,   # in_deg, out_deg, stage(2)*, blockchain(4)
+        GraphNodeType.ROUTER.value:        6 + stage_dim,
+        GraphNodeType.TOKEN.value:         14 + stage_dim,  # + token_symbol(8)
+        GraphNodeType.OTHER_ACCOUNT.value: 6 + stage_dim,
+        GraphNodeType.LOG_EVENT.value:     22 + stage_dim,  # + event_order(1), event_type(4), args_num(1), input_size(1), amounts(1), token_symbol(8)
+        GraphNodeType.VALIDATOR.value:     12,              # + src_blockchain(4), dst_blockchain(4), order(2)
+    }
+
+NODE_TYPE_FEATURE_DIMS = get_node_type_feature_dims(single_chain=False)
 
 EDGE_TYPE_MAP = {
     GraphEdgeType.TRANSACTION.value: 0,
@@ -49,12 +54,13 @@ BLOCKCHAIN_MAP = {
     "gnosis": [1, 0, 1, 1],
     "ronin": [1, 1, 0, 0],
     "unichain": [1, 1, 0, 1],
+    "moonbeam": [1, 1, 1, 0],
+    "moonriver": [1, 1, 1, 1],
 }
 
 BLOCKCHAIN_STAGE_MAP = {
     BlockchainType.SOURCE.value: 0,
     BlockchainType.DESTINATION.value: 1,
-    BlockchainType.OFFCHAIN.value: 2,
 }
 
 EVENT_TYPE_MAP = {
@@ -210,40 +216,43 @@ class FeatureExtractor:
 
 
     # ======= Node feature computation methods by node type ========
-    def compute_user_node_features(self, user_nodes: list):
-        # features: [in_deg, out_deg, blockchain (binary, size 4), blockchain type (one-hot, size 3)]
+    def compute_user_node_features(self, user_nodes: list, single_chain: bool = False):
         in_deg, out_deg = self.compute_degrees(user_nodes)
         feature_elements = [in_deg, out_deg]
 
-        feature_elements.append(self.encode_blockchain_stages(user_nodes))
+        if not single_chain:
+            feature_elements.append(self.encode_blockchain_stages(user_nodes))
         feature_elements.append(self.encode_node_blockchains(user_nodes))
 
         return np.concatenate(feature_elements, axis=1)
 
-    def compute_router_node_features(self, router_nodes: list):
+    def compute_router_node_features(self, router_nodes: list, single_chain: bool = False):
         in_deg, out_deg = self.compute_degrees(router_nodes)
         feature_elements = [in_deg, out_deg]
 
-        feature_elements.append(self.encode_blockchain_stages(router_nodes))
+        if not single_chain:
+            feature_elements.append(self.encode_blockchain_stages(router_nodes))
         feature_elements.append(self.encode_node_blockchains(router_nodes))
 
         return np.concatenate(feature_elements, axis=1)
 
-    def compute_token_node_features(self, token_nodes: list):
+    def compute_token_node_features(self, token_nodes: list, single_chain: bool = False):
         in_deg, out_deg = self.compute_degrees(token_nodes)
         feature_elements = [in_deg, out_deg]
 
-        feature_elements.append(self.encode_blockchain_stages(token_nodes))
+        if not single_chain:
+            feature_elements.append(self.encode_blockchain_stages(token_nodes))
         feature_elements.append(self.encode_node_blockchains(token_nodes))
 
         feature_elements.append(self.compute_token_symbols(token_nodes))
         return np.concatenate(feature_elements, axis=1)
 
-    def compute_other_account_node_features(self, other_account_nodes: list):
+    def compute_other_account_node_features(self, other_account_nodes: list, single_chain: bool = False):
         in_deg, out_deg = self.compute_degrees(other_account_nodes)
         feature_elements = [in_deg, out_deg]
 
-        feature_elements.append(self.encode_blockchain_stages(other_account_nodes))
+        if not single_chain:
+            feature_elements.append(self.encode_blockchain_stages(other_account_nodes))
         feature_elements.append(self.encode_node_blockchains(other_account_nodes))
 
         return np.concatenate(feature_elements, axis=1)
@@ -254,7 +263,8 @@ class FeatureExtractor:
         in_deg, out_deg = self.compute_degrees(log_event_nodes)
         feature_elements = [in_deg, out_deg] # 2 features
 
-        feature_elements.append(self.encode_blockchain_stages(log_event_nodes)) # 3 features (one-hot encoding for source/offchain/destination)
+        if not single_chain:
+            feature_elements.append(self.encode_blockchain_stages(log_event_nodes)) # 2 features (one-hot encoding for source/offchain/destination)
         feature_elements.append(self.encode_node_blockchains(log_event_nodes)) # 4 features (binary encoding for blockchains)
 
         if single_chain:
@@ -281,13 +291,13 @@ class FeatureExtractor:
 
     def compute_node_features_type(self, ntype_nodes: list, ntype: str, single_chain=False):
         if ntype == GraphNodeType.USER.value:
-            return self.compute_user_node_features(ntype_nodes)
+            return self.compute_user_node_features(ntype_nodes, single_chain=single_chain)
         elif ntype == GraphNodeType.ROUTER.value:
-            return self.compute_router_node_features(ntype_nodes)
+            return self.compute_router_node_features(ntype_nodes, single_chain=single_chain)
         elif ntype == GraphNodeType.TOKEN.value:
-            return self.compute_token_node_features(ntype_nodes)
+            return self.compute_token_node_features(ntype_nodes, single_chain=single_chain)
         elif ntype == GraphNodeType.OTHER_ACCOUNT.value:
-            return self.compute_other_account_node_features(ntype_nodes)
+            return self.compute_other_account_node_features(ntype_nodes, single_chain=single_chain)
         elif ntype == GraphNodeType.LOG_EVENT.value:
             return self.compute_log_event_node_features(ntype_nodes, single_chain=single_chain)
         elif ntype == GraphNodeType.VALIDATOR.value:
