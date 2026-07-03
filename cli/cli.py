@@ -43,7 +43,7 @@ class Cli:
 
         kwargs = {
             "gpu": args.device,
-            "kfolds": args.kfolds,
+            "k_folds": args.kfolds,
             "num_epochs": args.num_epochs,
             "early_stopping": args.early_stopping,
             "num_workers": args.num_workers,

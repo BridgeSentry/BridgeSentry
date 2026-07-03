@@ -414,7 +414,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
     # Determine the graph label weights based on the ratio of each label in the dataset
     # Less frequent labels (i.e. anomalies) should have higher weights to penalize
     # misclassification more than the normal label
-    label_counts = torch.bincount(torch.tensor(y_train_val), minlength=4)
+    label_counts = torch.bincount(torch.tensor(y_train_val), minlength=2)
     class_weights = 1.0 / (label_counts + 1e-12)  # Add small value to avoid division by zero
     class_weights = class_weights / class_weights.sum()  # Normalize to sum to 1
     class_weights = class_weights.to(device)
@@ -494,7 +494,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
             node_types=dataset[0].node_types,
             first_layer_channels=model_args.get("first_layer_channels", 128),
             hidden_channels=model_args.get("hidden_channels", 64),
-            out_channels=model_args.get("out_channels", 4),
+            out_channels=model_args.get("out_channels", 2),
             dropout=model_args.get("dropout", 0.5),
             input_drop=model_args.get("input_drop", 0.0),
             att_drop=model_args.get("att_drop", 0.0),
@@ -608,7 +608,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
             node_types=dataset[0].node_types,
             first_layer_channels=model_args.get("first_layer_channels", 128),
             hidden_channels=model_args.get("hidden_channels", 64),
-            out_channels=model_args.get("out_channels", 4),
+            out_channels=model_args.get("out_channels", 2),
             dropout=model_args.get("dropout", 0.5),
             input_drop=model_args.get("input_drop", 0.0),
             att_drop=model_args.get("att_drop", 0.0),
