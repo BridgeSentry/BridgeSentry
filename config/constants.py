@@ -18,3 +18,4 @@ class Bridge(Enum):
     QUBIT = "qubit"
     THORCHAIN = "thorchain"
     THORCHAIN2 = "thorchain2"
+    THORCHAIN3 = "thorchain3"

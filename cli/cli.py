@@ -85,7 +85,7 @@ class Cli:
             ("activation",          "relu","act"),
             ("pooling",             "mean","pool"),
             ("residual",            False, "res"),
-            ("early_stopping",      False, "es"),
+            ("early_stopping",      None, "es"),
         ]
         for attr, default, short in non_default_params:
             value = getattr(args, attr)
@@ -193,8 +193,9 @@ class Cli:
         )
         training_parser.add_argument(
             "--early-stopping",
-            action="store_true",
-            help="Whether to use early stopping based on validation loss (default: False)",
+            type=int,
+            default=None,
+            help="Whether to use early stopping based on validation loss, and the patience value (default: None)",
         )
         training_parser.add_argument(
             "--learning-rate",

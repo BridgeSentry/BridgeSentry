@@ -22,6 +22,7 @@ class TrainingReporter:
         "precision_anomaly",
         "recall_anomaly",
         "f1_anomaly",
+        "f2_anomaly",
         "mcc",
         "roc_auc",
         "pr_auc",
@@ -38,16 +39,18 @@ class TrainingReporter:
         "precision_anomaly",
         "recall_anomaly",
         "f1_anomaly",
+        "f2_anomaly",
         "roc_auc",
         "pr_auc",
         "mcc",
     ]
 
-    def __init__(self, reports_root: str, name_prefix: str, params: dict):
+    def __init__(self, reports_root: str, name_prefix: str, params: dict, k_folds: int):
         timestamp = datetime.now().strftime("%Y%m%d%H%M")
         self.run_name = f"{name_prefix}_{timestamp}"
         self.run_dir = os.path.join(reports_root, self.run_name)
         self.charts_dir = os.path.join(self.run_dir, "charts")
+        self.k_folds = k_folds
 
         os.makedirs(self.charts_dir, exist_ok=True)
 
@@ -70,14 +73,22 @@ class TrainingReporter:
             if fold not in self.val_history[metric_name]:
                 self.val_history[metric_name][fold] = {}
             self.val_history[metric_name][fold][epoch] = metrics[metric_name]
+        self._save_val_csvs()
 
     def record_test_fold(self, fold: int, metrics: dict) -> None:
         self.test_metrics.append({"fold": fold, **metrics})
-
-    def save(self, metric_display: list[tuple[str, str]], k_folds: int) -> None:
-        self._save_val_csvs(k_folds)
-        self._save_val_charts(k_folds)
         self._save_test_csv()
+
+    def flush_charts(self) -> None:
+        """Regenerate validation charts from the current in-memory history.
+
+        Call after each fold completes so charts on disk reflect progress
+        without waiting for the whole run to finish.
+        """
+        self._save_val_charts()
+
+    def save(self, metric_display: list[tuple[str, str]]) -> None:
+        self.flush_charts()
         self._save_summary_txt(metric_display)
         print(f"\nReport saved to: {self.run_dir}")
 
@@ -87,7 +98,7 @@ class TrainingReporter:
 
     # Save per-epoch validation metrics to CSVs, one file per metric, with the
     # first column as epoch number and subsequent columns as fold values.
-    def _save_val_csvs(self, k_folds: int) -> None:
+    def _save_val_csvs(self) -> None:
         for metric in self.VAL_METRICS:
             fold_data = self.val_history[metric]
             if not fold_data:
@@ -96,11 +107,11 @@ class TrainingReporter:
             max_epoch = max(
                 max(epochs.keys()) for epochs in fold_data.values()
             )
-            header = ["epoch"] + [f"fold_{f + 1}" for f in range(k_folds)]
+            header = ["epoch"] + [f"fold_{f + 1}" for f in range(self.k_folds)]
             rows = []
             for epoch in range(max_epoch + 1):
                 row = [epoch + 1]
-                for fold in range(k_folds):
+                for fold in range(self.k_folds):
                     row.append(fold_data.get(fold, {}).get(epoch, ""))
                 rows.append(row)
 
@@ -112,14 +123,14 @@ class TrainingReporter:
 
     # Generate and save line charts for each validation metric, with epochs on
     # the x-axis and metric values on the y-axis, one line per fold.
-    def _save_val_charts(self, k_folds: int) -> None:
+    def _save_val_charts(self) -> None:
         for metric in self.VAL_METRICS:
             fold_data = self.val_history[metric]
             if not fold_data:
                 continue
 
             fig, ax = plt.subplots()
-            for fold in range(k_folds):
+            for fold in range(self.k_folds):
                 if fold not in fold_data:
                     continue
                 epochs_dict = fold_data[fold]

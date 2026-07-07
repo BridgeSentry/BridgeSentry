@@ -26,6 +26,10 @@ from dataset_generator.types import DATASET_CLASS
 from dataset_generator.augmentation import augment_anomaly_graphs
 from dataset_generator.training_reporter import TrainingReporter
 
+def fbeta_score(precision: float, recall: float, beta: float = 2) -> float:
+    denom = (beta ** 2) * precision + recall
+    return (1 + beta ** 2) * precision * recall / denom if denom > 0 else 0.0
+
 def get_adjacency_matrices(
     graph: HeteroData,
     device: torch.device | str | None = None,
@@ -467,6 +471,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         reports_root="reports",
         name_prefix=kwargs.get("run_name_prefix", "train"),
         params={**model_args, **{k: v for k, v in kwargs.items() if k != "run_name_prefix"}},
+        k_folds=k_folds,
     )
 
     criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
@@ -509,16 +514,17 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
             lr=model_args.get("learning_rate", 0.01),
             weight_decay=model_args.get("weight_decay", 5e-4),
         )
-        early_stopping = EarlyStopping(patience=10, delta=0, device=device)
+        early_stopping = EarlyStopping(
+            patience=kwargs.get("early_stopping", 10), 
+            delta=0, 
+            device=device
+        )
 
         train_subset = torch.utils.data.Subset(X_train_val, train_idx)
         val_subset = torch.utils.data.Subset(X_train_val, val_idx)
 
         train_loader = DataLoader(train_subset, batch_size=model_args.get("batch_size", 32), shuffle=True, num_workers=kwargs.get("num_workers", 0), collate_fn=collate_fn)
         val_loader = DataLoader(val_subset, batch_size=model_args.get("batch_size", 32), shuffle=False, num_workers=kwargs.get("num_workers", 0), collate_fn=collate_fn)
-
-        fold_best_val_loss = float("inf")
-        fold_best_model_state: dict | None = None
 
         for epoch in range(num_epochs):
             model.train()
@@ -552,13 +558,27 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
                     all_val_probs.extend(probs.detach().cpu().tolist())
 
                 avg_val_loss = val_loss / len(val_loader)
-                print(f"  Fold {fold + 1}, epoch {epoch + 1}, val loss: {avg_val_loss:.4f}")
-                print(classification_report(all_labels, all_preds, zero_division=0))
 
                 all_val_probs_np = np.array(all_val_probs)
                 val_precision, val_recall, val_f1, _ = precision_recall_fscore_support(
                     all_labels, all_preds, labels=[0, 1], zero_division=0
                 )
+                val_pr_auc = average_precision_score(all_labels, all_val_probs_np[:, 1])
+                val_roc_auc = roc_auc_score(all_labels, all_val_probs_np[:, 1])
+                val_mcc = matthews_corrcoef(all_labels, all_preds)
+
+                # F2-score (anomaly): weighs recall more than precision, but still
+                # collapses towards 0 if precision collapses — used as a tiebreaker
+                # for checkpoint selection when PR-AUC plateaus (see EarlyStopping).
+                val_f2_anomaly = fbeta_score(val_precision[1], val_recall[1])
+
+                print(
+                    f"  Fold {fold + 1}, epoch {epoch + 1}, train loss: {avg_train_loss:.4f}, "
+                    f"val loss: {avg_val_loss:.4f}, PR-AUC (anomaly): {val_pr_auc:.4f}, "
+                    f"f2-score (anomaly): {val_f2_anomaly:.4f}"
+                )
+                print(classification_report(all_labels, all_preds, zero_division=0))
+
                 reporter.record_val_epoch(fold, epoch, {
                     "train_loss": avg_train_loss,
                     "val_loss": avg_val_loss,
@@ -569,22 +589,21 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
                     "precision_anomaly": val_precision[1],
                     "recall_anomaly": val_recall[1],
                     "f1_anomaly": val_f1[1],
-                    "mcc": matthews_corrcoef(all_labels, all_preds),
-                    "roc_auc": roc_auc_score(all_labels, all_val_probs_np[:, 1]),
-                    "pr_auc": average_precision_score(all_labels, all_val_probs_np[:, 1]),
+                    "f2_anomaly": val_f2_anomaly,
+                    "mcc": val_mcc,
+                    "roc_auc": val_roc_auc,
+                    "pr_auc": val_pr_auc,
                 })
 
-                early_stopping(avg_val_loss, model)
-                if kwargs.get("early_stopping", False) and early_stopping.early_stop:
+                early_stopping(val_pr_auc, val_f2_anomaly, model)
+                if kwargs.get("early_stopping", None) is not None and early_stopping.early_stop:
                     print(f"Early stopping triggered at epoch {epoch + 1} for fold {fold + 1}.")
                     break
 
-                if avg_val_loss < fold_best_val_loss:
-                    fold_best_val_loss = avg_val_loss
-                    fold_best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+        if early_stopping.best_model_state is not None:
+            fold_model_states.append((fold, early_stopping.best_model_state))
 
-        if fold_best_model_state is not None:
-            fold_model_states.append((fold, fold_best_model_state))
+        reporter.flush_charts()
 
     if not fold_model_states:
         print("No model was trained; skipping test evaluation.")
@@ -645,6 +664,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         mcc = matthews_corrcoef(all_labels, all_preds)
         roc_auc = roc_auc_score(all_labels, all_probs[:, 1])
         pr_auc = average_precision_score(all_labels, all_probs[:, 1])
+        f2_anomaly = fbeta_score(precision[1], recall[1])
         avg_test_loss = test_loss / len(test_loader)
 
         fold_metrics.append({
@@ -656,6 +676,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
             "precision_anomaly": precision[1],
             "recall_anomaly": recall[1],
             "f1_anomaly": f1[1],
+            "f2_anomaly": f2_anomaly,
             "mcc": mcc,
             "roc_auc": roc_auc,
             "pr_auc": pr_auc,
@@ -677,6 +698,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         ("precision_anomaly", "Precision  (anomaly)"),
         ("recall_anomaly",    "Recall     (anomaly)"),
         ("f1_anomaly",        "F1-score   (anomaly)"),
+        ("f2_anomaly",        "F2-score   (anomaly)"),
         ("roc_auc",           "ROC-AUC"),
         ("pr_auc",            "PR-AUC"),
         ("mcc",               "MCC"),
@@ -685,4 +707,4 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         values = [m[key] for m in fold_metrics]
         print(f"  {label:<26} {np.mean(values):.4f} ± {np.std(values):.4f}")
 
-    reporter.save(metric_display, k_folds)
+    reporter.save(metric_display)
