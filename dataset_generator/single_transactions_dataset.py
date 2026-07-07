@@ -9,6 +9,7 @@ import os
 from torch_geometric.data import InMemoryDataset, HeteroData
 from tqdm import tqdm
 
+from config.constants import Bridge
 from dataset_generator.feature_extraction import get_node_type_feature_dims, SINGLE_CHAIN_LABEL_MAP, FeatureExtractor
 from repository.database import DBSession
 from repository.db.graph_label import BlockchainGraphLabel
@@ -41,6 +42,7 @@ class SingleTransactionsDataset(InMemoryDataset):
         ) -> None:
         assert split in ['train', 'val', 'test']
         self.augment_factor = augment_factor
+        self.cctx_mapping_repo = GraphMappingCrossChainRepository(DBSession)
         self.blockchain_mapping_repo = GraphMappingBlockchainRepository(DBSession)
         self.graph_nodes_repo = GraphNodeRepository(DBSession)
         self.graph_edges_repo = GraphEdgeRepository(DBSession)
@@ -120,15 +122,34 @@ class SingleTransactionsDataset(InMemoryDataset):
 
     def download(self):
         log_to_cli("Exporting data from database to CSV files... ")
+        # Get original blockchain mappings (disconnected from cross-chain graphs)
         blockchain_tx_mappings = self.blockchain_mapping_repo.get_all_non_cctx()
+        nodes = self.graph_nodes_repo.get_all_non_cctx()
+        edges = self.graph_edges_repo.get_all_non_cctx()
+
+        # In addition, also get the source part of the cross-chain tx's in these bridges (for additional anomaly cases)
+        cctx_source_mappings = self.blockchain_mapping_repo.get_cctxs_source_anomalies([
+            Bridge.QUBIT.value, Bridge.THORCHAIN2.value, Bridge.THORCHAIN3.value,
+        ])
+        blockchain_tx_mappings.extend(cctx_source_mappings)
+
+        cctx_source_nodes = self.graph_nodes_repo.get_by_chain_graph_ids([
+            mapping.graph_id for mapping in cctx_source_mappings
+        ], no_offchain=True)
+        nodes.extend(cctx_source_nodes)
+
+        cctx_source_edges = self.graph_edges_repo.get_by_chain_graph_ids([
+            mapping.graph_id for mapping in cctx_source_mappings
+        ], no_offchain=True)
+        edges.extend(cctx_source_edges)
+
+        # Export
         blockchain_columns = [col.name for col in GraphMappingBlockchain.__table__.columns]
         self.convert_datatype_to_csv(blockchain_tx_mappings, blockchain_columns, "blockchain_mappings.csv")
 
-        nodes = self.graph_nodes_repo.get_all_non_cctx()
         node_columns = [col.name for col in GraphNode.__table__.columns]
         self.convert_datatype_to_csv(nodes, node_columns, "graph_nodes.csv")
 
-        edges = self.graph_edges_repo.get_all_non_cctx()
         edge_columns = [col.name for col in GraphEdge.__table__.columns]
         self.convert_datatype_to_csv(edges, edge_columns, "graph_edges.csv")
 
