@@ -20,12 +20,12 @@ NODE_TYPE_MAP = {
 def get_node_type_feature_dims(single_chain: bool = False) -> dict:
     stage_dim = 0 if single_chain else 2
     return {
-        GraphNodeType.USER.value:          6 + stage_dim,   # in_deg, out_deg, stage(2)*, blockchain(4)
-        GraphNodeType.ROUTER.value:        6 + stage_dim,
-        GraphNodeType.TOKEN.value:         14 + stage_dim,  # + token_symbol(8)
-        GraphNodeType.OTHER_ACCOUNT.value: 6 + stage_dim,
-        GraphNodeType.LOG_EVENT.value:     22 + stage_dim,  # + event_order(1), event_type(4), args_num(1), input_size(1), amounts(1), token_symbol(8)
-        GraphNodeType.VALIDATOR.value:     12,              # + src_blockchain(4), dst_blockchain(4), order(2)
+        GraphNodeType.USER.value:          7 + stage_dim,   # in_deg, out_deg, stage(2)*, blockchain(5)
+        GraphNodeType.ROUTER.value:        7 + stage_dim,
+        GraphNodeType.TOKEN.value:         15 + stage_dim,  # + token_symbol(8)
+        GraphNodeType.OTHER_ACCOUNT.value: 7 + stage_dim,
+        GraphNodeType.LOG_EVENT.value:     23 + stage_dim,  # + event_order(1), event_type(4), args_num(1), input_size(1), amounts(1), token_symbol(8)
+        GraphNodeType.VALIDATOR.value:     14,              # + src_blockchain(5), dst_blockchain(5), order(2)
     }
 
 NODE_TYPE_FEATURE_DIMS = get_node_type_feature_dims(single_chain=False)
@@ -41,21 +41,22 @@ EDGE_TYPE_MAP = {
 
 # Binary encoding for blockchains
 BLOCKCHAIN_MAP = {
-    "ethereum": [0, 0, 0, 1],
-    "bsc": [0, 0, 1, 0],
-    "polygon": [0, 0, 1, 1],
-    "avalanche": [0, 1, 0, 0],
-    "arbitrum": [0, 1, 0, 1],
-    "optimism": [0, 1, 1, 0],
-    "solana": [0, 1, 1, 1],
-    "base": [1, 0, 0, 0],
-    "scroll": [1, 0, 0, 1],
-    "linea": [1, 0, 1, 0],
-    "gnosis": [1, 0, 1, 1],
-    "ronin": [1, 1, 0, 0],
-    "unichain": [1, 1, 0, 1],
-    "moonbeam": [1, 1, 1, 0],
-    "moonriver": [1, 1, 1, 1],
+    "ethereum": [0, 0, 0, 0, 1],
+    "bsc": [0, 0, 0, 1, 0],
+    "polygon": [0, 0, 0, 1, 1],
+    "avalanche": [0, 0, 1, 0, 0],
+    "arbitrum": [0, 0, 1, 0, 1],
+    "optimism": [0, 0, 1, 1, 0],
+    "solana": [0, 0, 1, 1, 1],
+    "base": [0, 1, 0, 0, 0],
+    "scroll": [0, 1, 0, 0, 1],
+    "linea": [0, 1, 0, 1, 0],
+    "gnosis": [0, 1, 0, 1, 1],
+    "ronin": [0, 1, 1, 0, 0],
+    "unichain": [0, 1, 1, 0, 1],
+    "moonbeam": [0, 1, 1, 1, 0],
+    "moonriver": [0, 1, 1, 1, 1],
+    "celo": [1, 0, 0, 0, 0]
 }
 
 BLOCKCHAIN_STAGE_MAP = {
@@ -119,7 +120,7 @@ class FeatureExtractor:
     def encode_node_blockchains(self, ntype_nodes: list):
         # Use a binary encoding for blockchains, with one bit for each blockchain type
         # (this is possible since we have a fixed set of blockchains in our dataset)
-        return np.array([BLOCKCHAIN_MAP.get(node.blockchain, [0, 0, 0, 0]) for node in ntype_nodes])
+        return np.array([BLOCKCHAIN_MAP.get(node.blockchain, [0, 0, 0, 0, 0]) for node in ntype_nodes])
 
     def encode_blockchain_stages(self, objects):
         # Use a one-hot encoding for source/offchain/destination
@@ -184,8 +185,8 @@ class FeatureExtractor:
 
     # ======== Validator-specific node feature encoding methods ========
     def encode_src_dst_blockchains_and_orders(self, node_attributes):
-        blockchain_src = np.array([BLOCKCHAIN_MAP.get(attr.get("source_chain"), [0, 0, 0, 0]) for attr in node_attributes], dtype=int)
-        blockchain_dst = np.array([BLOCKCHAIN_MAP.get(attr.get("target_chain"), [0, 0, 0, 0]) for attr in node_attributes], dtype=int)
+        blockchain_src = np.array([BLOCKCHAIN_MAP.get(attr.get("source_chain"), [0, 0, 0, 0, 0]) for attr in node_attributes], dtype=int)
+        blockchain_dst = np.array([BLOCKCHAIN_MAP.get(attr.get("target_chain"), [0, 0, 0, 0, 0]) for attr in node_attributes], dtype=int)
         
         # For the order, we will be solely be considering pair-wise bridges, and depending on the timestamp order,
         # we can have 2 possible orders: source -> destination and destination -> source.
