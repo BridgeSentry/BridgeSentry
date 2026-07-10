@@ -1,7 +1,7 @@
 from sqlalchemy import func, or_
 
 from repository.base import BaseRepository
-from .graph_label import GraphNodeType
+from .graph_label import BlockchainGraphLabel, BlockchainType, GraphEdgeType, GraphNodeType
 
 from .models import (
     GraphEdge,
@@ -18,13 +18,21 @@ class GraphMappingBlockchainRepository(BaseRepository):
     def get_all_non_cctx(self):
         with self.get_session() as session:
             return session.query(GraphMappingBlockchain).filter(
-                GraphMappingBlockchain.cctx_graph_id.is_(None)
+                GraphMappingBlockchain.cctx_graph_id.is_(None),
+                or_(
+                    GraphMappingBlockchain.discard_flag != 1,
+                    GraphMappingBlockchain.discard_flag.is_(None),
+                )
             ).all()
         
     def get_all_cctx(self):
         with self.get_session() as session:
             return session.query(GraphMappingBlockchain).filter(
-                GraphMappingBlockchain.cctx_graph_id.is_not(None)
+                GraphMappingBlockchain.cctx_graph_id.is_not(None),
+                or_(
+                    GraphMappingBlockchain.discard_flag != 1,
+                    GraphMappingBlockchain.discard_flag.is_(None),
+                )
             ).all()
 
     def get_by_id(self, graph_id: int):
@@ -47,7 +55,18 @@ class GraphMappingBlockchainRepository(BaseRepository):
     def get_by_bridge(self, bridge: str):
         with self.get_session() as session:
             return session.query(GraphMappingBlockchain).filter(GraphMappingBlockchain.bridge == bridge).all()
-
+    
+    def get_cctxs_source_anomalies(self, bridges: list[str]):
+        with self.get_session() as session:
+            return session.query(GraphMappingBlockchain).filter(
+                or_(
+                    GraphMappingBlockchain.discard_flag != 1,
+                    GraphMappingBlockchain.discard_flag.is_(None),
+                ),
+                GraphMappingBlockchain.bridge.in_(bridges),
+                GraphMappingBlockchain.cctx_graph_id.isnot(None),
+                GraphMappingBlockchain.label == BlockchainGraphLabel.ANOMALY.value
+            ).all()
 
 class GraphMappingCrossChainRepository(BaseRepository):
     def __init__(self, session_factory):
@@ -87,15 +106,41 @@ class GraphNodeRepository(BaseRepository):
 
     def get_all_cctx(self):
         with self.get_session() as session:
-            return session.query(GraphNode).filter(GraphNode.cctx_graph_id.is_not(None)).all()
+            return session.query(GraphNode).filter(
+                or_(
+                    GraphNode.discard_flag != 1,
+                    GraphNode.discard_flag.is_(None),
+                ),
+                GraphNode.cctx_graph_id.is_not(None)
+            ).all()
         
     def get_all_non_cctx(self):
         with self.get_session() as session:
-            return session.query(GraphNode).filter(GraphNode.cctx_graph_id.is_(None)).all()
+            return session.query(GraphNode).filter(
+                GraphNode.cctx_graph_id.is_(None),
+                or_(
+                    GraphNode.discard_flag != 1,
+                    GraphNode.discard_flag.is_(None),
+                )
+            ).all()
 
     def get_by_address(self, graph_id: int, address: str):
         with self.get_session() as session:
             return session.query(GraphNode).filter(GraphNode.chain_graph_id == graph_id, GraphNode.address == address).first()
+
+    def get_by_chain_graph_ids(self, chain_graph_ids: list[str], no_offchain: bool = False):
+        with self.get_session() as session:
+            query = session.query(GraphNode).filter(GraphNode.chain_graph_id.in_(chain_graph_ids))
+            if no_offchain:
+                query = query.filter(
+                    or_(
+                        GraphNode.discard_flag != 1,
+                        GraphNode.discard_flag.is_(None),
+                    ),
+                    GraphNode.blockchain_type != BlockchainType.OFFCHAIN.value,
+                    GraphNode.node_type != GraphNodeType.VALIDATOR.value
+                )
+            return query.all()
 
     def get_by_cctx_graph_id(self, cctx_graph_id: int):
         with self.get_session() as session:
@@ -172,8 +217,27 @@ class GraphEdgeRepository(BaseRepository):
         
     def get_all_non_cctx(self):
         with self.get_session() as session:
-            return session.query(GraphEdge).filter(GraphEdge.cctx_graph_id.is_(None)).all()
+            return session.query(GraphEdge).filter(
+                GraphEdge.cctx_graph_id.is_(None),
+                or_(
+                    GraphEdge.discard_flag != 1,
+                    GraphEdge.discard_flag.is_(None),
+                )
+            ).all()
 
+    def get_by_chain_graph_ids(self, chain_graph_ids: list[str], no_offchain: bool = False):
+        with self.get_session() as session:
+            query = session.query(GraphEdge).filter(GraphEdge.chain_graph_id.in_(chain_graph_ids))
+            if no_offchain:
+                query = query.filter(
+                    or_(
+                        GraphEdge.discard_flag != 1,
+                        GraphEdge.discard_flag.is_(None),
+                    ),
+                    GraphEdge.blockchain_type != BlockchainType.OFFCHAIN.value,
+                    GraphEdge.edge_type != GraphEdgeType.CROSS_CHAIN_RELATION.value
+                )
+            return query.all()
 
     def get_by_connections(self, graph_id: int, source_id: int, target_id: int):
         with self.get_session() as session:
