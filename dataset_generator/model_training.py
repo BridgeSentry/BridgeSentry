@@ -1,3 +1,4 @@
+import time
 from venv import logger
 
 import numpy as np
@@ -13,10 +14,9 @@ import torch
 from torch_geometric.data import Batch, HeteroData
 from torch_geometric.loader import DataLoader
 
-from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
+from sklearn.model_selection import StratifiedKFold, train_test_split
 from collections import defaultdict
 from typing import DefaultDict
-from dataset_generator.cctx_dataset import CrossChainTransactionsDataset
 from dataset_generator.early_stopping import EarlyStopping
 from dataset_generator.feature_extraction import AMOUNTS_INDEX, ARGS_NUM_INDEX, IN_DEGREE_INDEX, INPUT_SIZE_INDEX, OUT_DEGREE_INDEX
 from dataset_generator.model.bridge_defender import BridgeDefender
@@ -136,7 +136,7 @@ def differential_metapath_extraction(
     dataset: list[HeteroData],
     max_hops: int = 5,
     threshold: float = 0.5,
-) -> list[EdgeMetapath]:
+) -> tuple[list[EdgeMetapath], dict[EdgeMetapath, float]]:
     metapath_counts = {}
     label_counts = {
         'normal': 0,
@@ -159,6 +159,7 @@ def differential_metapath_extraction(
     # Divide the count of each meta-path by the total number of graphs with that label 
     # to obtain the average frequency of each meta-path for each label.
     differential_metapaths = []
+    differential_values: dict[EdgeMetapath, float] = {}
     for metapath, mp_labels in metapath_counts.items():
         if 'normal' not in mp_labels:
             mp_labels['normal'] = 0.0
@@ -168,10 +169,12 @@ def differential_metapath_extraction(
         for label, count in label_counts.items():
             mp_labels[label] = mp_labels[label] / (count + 1e-12)
 
-        if abs(mp_labels['normal'] - mp_labels['anomaly']) > threshold:
+        diff = mp_labels['anomaly'] - mp_labels['normal']
+        if abs(diff) > threshold:
             differential_metapaths.append(metapath)
-    
-    return differential_metapaths
+            differential_values[metapath] = diff
+
+    return differential_metapaths, differential_values
 
 def aggregate_metapath_features(
     graph: HeteroData,
@@ -308,13 +311,13 @@ def aggregate_metapath_features(
     return metapath_features, feature_sizes
 
 
-def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, model_args: dict, **kwargs):
+def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, model_args: dict, reports_root: str, **kwargs):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     device = device if kwargs.get("gpu", "cuda") == "cuda" else "cpu"
     print("Early stopping:", kwargs.get("early_stopping", False))
 
     dataset = DATASET_CLASS[dataset_type](root=dataset_path, force_reload=force_reload)
-    torch.manual_seed(42)
+    torch.manual_seed(kwargs.get("random_seed", 42))
 
     # Separate pre-generated synthetic (augmented) graphs from real ones.
     # Synthetic graphs must ONLY appear in the training split, never in the test set.
@@ -409,6 +412,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
             X_train_val,
             y_train_val,
             augment_factor=runtime_augment_factor,
+            seed=kwargs.get("random_seed", 42),
         )
         X_train_val = X_train_val + aug_graphs
         y_train_val = y_train_val + aug_labels
@@ -425,7 +429,10 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
 
     # Perform Differential Meta-path Extraction on the training/validation set
     # to identify the most discriminative meta-paths for the classification task
-    metapaths = differential_metapath_extraction(X_train_val, threshold=0.5, max_hops=5)
+    dme_threshold = model_args.get("dme_threshold", 0.5)
+    metapaths, metapath_differential_values = differential_metapath_extraction(
+        X_train_val, threshold=dme_threshold, max_hops=5
+    )
     print(f"Identified {len(metapaths)} differential meta-paths for training.")
 
     # As a pre-processing step, we will calculate the aggregated meta-path features for each graph in the dataset,
@@ -468,11 +475,17 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
     kfold = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=42)
 
     reporter = TrainingReporter(
-        reports_root="reports",
+        reports_root=reports_root,
         name_prefix=kwargs.get("run_name_prefix", "train"),
         params={**model_args, **{k: v for k, v in kwargs.items() if k != "run_name_prefix"}},
         k_folds=k_folds,
+        dataset_type=dataset_type,
+        dataset_path=dataset_path,
+        dataset_graphs=real_graphs,
+        dme_threshold=dme_threshold,
+        reported_metapaths=len(metapaths),
     )
+    reporter.save_metapath_report(metapaths, metapath_differential_values)
 
     criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
 
@@ -487,6 +500,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
     fold_model_states: list[tuple[int, dict]] = []
 
     for fold, (train_idx, val_idx) in enumerate(kfold.split(X_train_val[:n_real_train_val], y_train_val[:n_real_train_val])):
+        fold_start_time = time.perf_counter()
         # Each fold's train index covers real training graphs only; add synthetic graphs
         # whose *source* real graph also falls in this fold's training partition.
         # This prevents augmented copies of validation graphs from leaking into training.
@@ -603,6 +617,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         if early_stopping.best_model_state is not None:
             fold_model_states.append((fold, early_stopping.best_model_state))
 
+        reporter.record_fold_duration(fold, time.perf_counter() - fold_start_time)
         reporter.flush_charts()
 
     if not fold_model_states:

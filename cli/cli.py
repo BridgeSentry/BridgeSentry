@@ -4,6 +4,7 @@ import torch
 
 from config.constants import Bridge
 from dataset_generator.generator import GraphDatasetGenerator
+from dataset_generator.dataset_output import resolve_dataset_and_reports_root
 from dataset_generator.types import DATASET_TYPE
 from utils.utils import get_enum_instance
 
@@ -19,14 +20,17 @@ class Cli:
         force_reload = args.force_reload
 
         # Create generator file
-        augment_factor = args.augment_factor
-        generator = GraphDatasetGenerator(bridges, dataset_type, output_folder, force_reload, augment_factor=augment_factor)
+        generator = GraphDatasetGenerator(bridges, dataset_type, output_folder, force_reload)
         generator.generate_graph_dataset()
 
     def train_model(args):
         dataset_type = args.dataset
-        dataset_path = args.data_dir
-        force_reload = args.force_reload
+        dataset_path, reports_root, force_reload = resolve_dataset_and_reports_root(
+            dataset_type=dataset_type,
+            load_data=args.load_data,
+            new_dataset_tags=args.new_dataset,
+            force_reload=args.force_reload,
+        )
         model_args = {
             "first_layer_channels": args.first_layer_channels,
             "hidden_channels": args.hidden_channels,
@@ -39,6 +43,7 @@ class Cli:
             "residual": args.residual,
             "pooling": args.pooling,
             "learning_rate": args.learning_rate,
+            "dme_threshold": args.dme_threshold,
         }
 
         kwargs = {
@@ -49,6 +54,7 @@ class Cli:
             "num_workers": args.num_workers,
             "augment_factor": args.augment_factor,
             "run_name_prefix": Cli._build_run_name_prefix(args),
+            "random_seed": args.random_seed,
         }
 
         train(
@@ -56,6 +62,7 @@ class Cli:
             dataset_path=dataset_path,
             force_reload=force_reload,
             model_args=model_args,
+            reports_root=reports_root,
             **kwargs
         )
 
@@ -75,6 +82,7 @@ class Cli:
         non_default_params = [
             ("kfolds",              5,     "k"),
             ("learning_rate",       0.01,  "lr"),
+            ("dme_threshold",       0.5,   "dme"),
             ("first_layer_channels",128,   "fl"),
             ("hidden_channels",     64,    "hc"),
             ("dropout",             0.5,   "do"),
@@ -85,7 +93,8 @@ class Cli:
             ("activation",          "relu","act"),
             ("pooling",             "mean","pool"),
             ("residual",            False, "res"),
-            ("early_stopping",      None, "es"),
+            ("early_stopping",      None,  "es"),
+            ("random_seed",         42,    "seed"),
         ]
         for attr, default, short in non_default_params:
             value = getattr(args, attr)
@@ -138,12 +147,6 @@ class Cli:
             action="store_true",
             help="Force reload the graph dataset even if it already exists (default: False)",
         )
-        graph_dataset_parser.add_argument(
-            "--augment-factor",
-            type=int,
-            default=0,
-            help="Number of augmented copies per anomaly graph saved in the dataset (0 = disabled, default: 0)",
-        )
         graph_dataset_parser.set_defaults(func=Cli.generate_graph_dataset)
 
         training_parser = subparsers.add_parser(
@@ -162,11 +165,18 @@ class Cli:
             required=True,
             help="The type of graph dataset to train on",
         )
-        training_parser.add_argument(
-            "--data-dir",
+        dataset_group = training_parser.add_mutually_exclusive_group(required=True)
+        dataset_group.add_argument(
+            "--load-data",
             type=str,
-            required=True,
             help="The directory where the graph dataset is located.",
+        )
+        dataset_group.add_argument(
+            "--new-dataset",
+            nargs='?',
+            const='',
+            default=None,
+            help="Create a new dataset. It will be stored in a new directory inside the outputs/ folder. Optionally pass comma-separated tags for folder naming."
         )
         training_parser.add_argument(
             "-f", "--force-reload",
@@ -196,6 +206,12 @@ class Cli:
             type=int,
             default=None,
             help="Whether to use early stopping based on validation loss, and the patience value (default: None)",
+        )
+        training_parser.add_argument(
+            "--dme-threshold",
+            type=float,
+            default=0.5,
+            help="Threshold for the Differential Meta-Path Extraction (default: 0.5)",
         )
         training_parser.add_argument(
             "--learning-rate",
@@ -275,7 +291,13 @@ class Cli:
             "--augment-factor",
             type=int,
             default=0,
-            help="Additional runtime augmented copies per anomaly graph at training time (0 = use only pre-generated, default: 0)",
+            help="Number of augmented copies per anomaly graph generated at training time (0 = disabled, default: 0)",
+        )
+        training_parser.add_argument(
+            "--random-seed",
+            type=int,
+            default=42,
+            help="Random seed for reproducibility (default: 42)",
         )
         training_parser.set_defaults(func=Cli.train_model)
 
