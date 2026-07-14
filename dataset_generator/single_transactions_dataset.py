@@ -38,10 +38,8 @@ class SingleTransactionsDataset(InMemoryDataset):
             pre_transform: Optional[Callable] = None,
             pre_filter: Optional[Callable] = None,
             force_reload: bool = False,
-            augment_factor: int = 0,
         ) -> None:
         assert split in ['train', 'val', 'test']
-        self.augment_factor = augment_factor
         self.cctx_mapping_repo = GraphMappingCrossChainRepository(DBSession)
         self.blockchain_mapping_repo = GraphMappingBlockchainRepository(DBSession)
         self.graph_nodes_repo = GraphNodeRepository(DBSession)
@@ -175,11 +173,6 @@ class SingleTransactionsDataset(InMemoryDataset):
         node_types = set()
         edge_types = set()
 
-        # Accumulated in-memory for the augmentation pass after the main loop.
-        # Trade-off: doubles peak memory for large datasets, but avoids re-reading .pt files.
-        real_graphs_for_aug: list = []
-        real_labels_for_aug: list = []
-
         # Add a progress bar to track processing progresss
         pbar = tqdm(total=blockchain_df.shape[0], desc="Processing graphs", unit="graph")
         pbar.set_description("Processing single-chain graphs dataset")
@@ -207,9 +200,6 @@ class SingleTransactionsDataset(InMemoryDataset):
             writer.writerow([index, blockchain_graph_id, row['tx_hash'], graph_file_name, offset, False])
             offset += 1
 
-            real_graphs_for_aug.append(graph_data)
-            real_labels_for_aug.append(int(graph_data.y.item()))
-
             # Add the new node and edge types to the sets
             node_types.update(graph_data.node_types)
             edge_types.update(graph_data.edge_types)
@@ -229,57 +219,6 @@ class SingleTransactionsDataset(InMemoryDataset):
         if len(data_list) > 0:
             graph_file_path = os.path.join(self.processed_dir, f'graph_data_{compressed_file_number}.pt')
             torch.save(data_list, graph_file_path)
-            # Advance file number so the augmentation pass never overwrites this file.
-            compressed_file_number += 1
-            graph_file_name = f'graph_data_{compressed_file_number}.pt'
-            offset = 0
-
-        # --- Augmentation pass ---
-        # Generate synthetic copies of anomaly graphs and append them to the dataset.
-        # All augmented graphs are marked with synthetic=True in the index.
-        if self.augment_factor > 0:
-            from dataset_generator.augmentation import augment_anomaly_graphs
-            aug_anomaly_count = sum(1 for l in real_labels_for_aug if l != 0)
-            print(f"Generating {aug_anomaly_count * self.augment_factor} augmented anomaly graphs (factor={self.augment_factor})...")
-            aug_graphs, aug_labels = augment_anomaly_graphs(
-                real_graphs_for_aug,
-                real_labels_for_aug,
-                augment_factor=self.augment_factor,
-            )
-            aug_index = len(real_graphs_for_aug)
-            aug_data_list: list = []
-            for aug_graph, aug_label in zip(aug_graphs, aug_labels):
-                if self.pre_filter is not None and not self.pre_filter(aug_graph):
-                    continue
-                if self.pre_transform is not None:
-                    aug_graph = self.pre_transform(aug_graph)
-
-                aug_data_list.append(aug_graph)
-                writer.writerow([
-                    aug_index,
-                    aug_graph.tx_hash,   # use modified tx_hash as graph_id for synthetic graphs
-                    aug_graph.tx_hash,
-                    graph_file_name,
-                    offset,
-                    True,
-                ])
-                offset += 1
-                aug_index += 1
-
-                node_types.update(aug_graph.node_types)
-                edge_types.update(aug_graph.edge_types)
-
-                if len(aug_data_list) >= 50:
-                    graph_file_path = os.path.join(self.processed_dir, f'graph_data_{compressed_file_number}.pt')
-                    torch.save(aug_data_list, graph_file_path)
-                    aug_data_list = []
-                    compressed_file_number += 1
-                    graph_file_name = f'graph_data_{compressed_file_number}.pt'
-                    offset = 0
-
-            if aug_data_list:
-                graph_file_path = os.path.join(self.processed_dir, f'graph_data_{compressed_file_number}.pt')
-                torch.save(aug_data_list, graph_file_path)
 
         pbar.close()
         index_file.close()
