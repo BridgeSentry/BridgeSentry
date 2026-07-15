@@ -4,6 +4,7 @@ from datetime import datetime
 
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
 import yaml
 
 from repository.db.graph_label import GraphNodeType, GraphEdgeType
@@ -188,6 +189,18 @@ class TrainingReporter:
     def record_fold_duration(self, fold: int, duration_seconds: float) -> None:
         self.fold_durations[fold] = duration_seconds
         self._save_fold_duration_csv()
+
+    def save_model(self, fold: int, checkpoint: dict) -> str:
+        """Persist a fold's best-model checkpoint to `<run_dir>/models/fold_<n>.pt`.
+
+        `checkpoint` should be self-contained (state dict + everything needed to
+        rebuild the model and reproduce its preprocessing on a new dataset later).
+        """
+        models_dir = os.path.join(self.run_dir, "models")
+        os.makedirs(models_dir, exist_ok=True)
+        path = os.path.join(models_dir, f"fold_{fold + 1}.pt")
+        torch.save(checkpoint, path)
+        return path
 
     def save_metapath_report(self, metapaths: list, differential_values: dict) -> None:
         entries = [

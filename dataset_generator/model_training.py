@@ -311,6 +311,65 @@ def aggregate_metapath_features(
     return metapath_features, feature_sizes
 
 
+def compute_normalization_stats(graphs: list[HeteroData]) -> dict[str, torch.Tensor]:
+    """Compute min-max normalization stats (per-feature max values) over a set of graphs.
+
+    Must be computed on the training/validation pool only, then applied (via
+    `apply_normalization`) to any other split/dataset to avoid data leakage.
+    """
+    max_degrees = torch.zeros(1, dtype=torch.float32)
+    max_args_num = torch.zeros(1, dtype=torch.float32)
+    max_inputs_size = torch.zeros(1, dtype=torch.float32)
+    max_amounts = torch.zeros(1, dtype=torch.float32)
+    for graph in graphs:
+        for node_type in graph.node_types:
+            if hasattr(graph[node_type], 'x') and graph[node_type].x is not None:
+                in_degrees = graph[node_type].x[:, IN_DEGREE_INDEX]
+                out_degrees = graph[node_type].x[:, OUT_DEGREE_INDEX]
+                max_degrees = torch.max(max_degrees, in_degrees.max(dim=0).values if in_degrees.shape[0] > 0 else torch.zeros_like(max_degrees))
+                max_degrees = torch.max(max_degrees, out_degrees.max(dim=0).values if out_degrees.shape[0] > 0 else torch.zeros_like(max_degrees))
+
+            if node_type == GraphNodeType.LOG_EVENT.value:
+                # For log event nodes, we also want to normalize the args_num feature (which is at index 14),
+                # the inputs_size feature (which is at index 15),
+                # and the amounts feature (which is at index 16)
+                if hasattr(graph[node_type], 'x') and graph[node_type].x is not None:
+                    args_num = graph[node_type].x[:, ARGS_NUM_INDEX]
+                    inputs_size = graph[node_type].x[:, INPUT_SIZE_INDEX]
+                    amounts = graph[node_type].x[:, AMOUNTS_INDEX]
+                    max_args_num = torch.max(max_args_num, args_num.max(dim=0).values if args_num.shape[0] > 0 else torch.zeros_like(max_args_num))
+                    max_inputs_size = torch.max(max_inputs_size, inputs_size.max(dim=0).values if inputs_size.shape[0] > 0 else torch.zeros_like(max_inputs_size))
+                    max_amounts = torch.max(max_amounts, amounts.max(dim=0).values if amounts.shape[0] > 0 else torch.zeros_like(max_amounts))
+
+    return {
+        "max_degrees": max_degrees,
+        "max_args_num": max_args_num,
+        "max_inputs_size": max_inputs_size,
+        "max_amounts": max_amounts,
+    }
+
+
+def apply_normalization(graphs: list[HeteroData], stats: dict[str, torch.Tensor]) -> None:
+    """Apply min-max normalization in-place to `graphs`, using previously computed `stats`."""
+    max_degrees = stats["max_degrees"]
+    max_args_num = stats["max_args_num"]
+    max_inputs_size = stats["max_inputs_size"]
+    max_amounts = stats["max_amounts"]
+    for graph in graphs:
+        for node_type in graph.node_types:
+            if hasattr(graph[node_type], 'x') and graph[node_type].x is not None:
+                x = graph[node_type].x
+                x[:, IN_DEGREE_INDEX] = x[:, IN_DEGREE_INDEX] / (max_degrees[0] + 1e-12)
+                x[:, OUT_DEGREE_INDEX] = x[:, OUT_DEGREE_INDEX] / (max_degrees[0] + 1e-12)
+
+            if node_type == GraphNodeType.LOG_EVENT.value:
+                if hasattr(graph[node_type], 'x') and graph[node_type].x is not None:
+                    x = graph[node_type].x
+                    x[:, ARGS_NUM_INDEX] = x[:, ARGS_NUM_INDEX] / (max_args_num[0] + 1e-12)
+                    x[:, INPUT_SIZE_INDEX] = x[:, INPUT_SIZE_INDEX] / (max_inputs_size[0] + 1e-12)
+                    x[:, AMOUNTS_INDEX] = x[:, AMOUNTS_INDEX] / (max_amounts[0] + 1e-12)
+
+
 def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, model_args: dict, reports_root: str, **kwargs):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     device = device if kwargs.get("gpu", "cuda") == "cuda" else "cpu"
@@ -365,43 +424,8 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
     # to the node features of each node type across the entire training/validation set, and 
     # then apply the same scale to the test set to avoid data leakage.
     print("Normalizing node features using min-max normalization.")
-    max_degrees = torch.zeros(1, dtype=torch.float32)
-    max_args_num = torch.zeros(1, dtype=torch.float32)
-    max_inputs_size = torch.zeros(1, dtype=torch.float32)
-    max_amounts = torch.zeros(1, dtype=torch.float32)
-    for graph in X_train_val:
-        for node_type in graph.node_types:
-            if hasattr(graph[node_type], 'x') and graph[node_type].x is not None:
-                in_degrees = graph[node_type].x[:, IN_DEGREE_INDEX]
-                out_degrees = graph[node_type].x[:, OUT_DEGREE_INDEX]
-                max_degrees = torch.max(max_degrees, in_degrees.max(dim=0).values if in_degrees.shape[0] > 0 else torch.zeros_like(max_degrees))
-                max_degrees = torch.max(max_degrees, out_degrees.max(dim=0).values if out_degrees.shape[0] > 0 else torch.zeros_like(max_degrees))
-
-            if node_type == GraphNodeType.LOG_EVENT.value:
-                # For log event nodes, we also want to normalize the args_num feature (which is at index 14),
-                # the inputs_size feature (which is at index 15),
-                # and the amounts feature (which is at index 16)
-                if hasattr(graph[node_type], 'x') and graph[node_type].x is not None:
-                    args_num = graph[node_type].x[:, ARGS_NUM_INDEX]
-                    inputs_size = graph[node_type].x[:, INPUT_SIZE_INDEX]
-                    amounts = graph[node_type].x[:, AMOUNTS_INDEX]
-                    max_args_num = torch.max(max_args_num, args_num.max(dim=0).values if args_num.shape[0] > 0 else torch.zeros_like(max_args_num))
-                    max_inputs_size = torch.max(max_inputs_size, inputs_size.max(dim=0).values if inputs_size.shape[0] > 0 else torch.zeros_like(max_inputs_size))
-                    max_amounts = torch.max(max_amounts, amounts.max(dim=0).values if amounts.shape[0] > 0 else torch.zeros_like(max_amounts))
-
-    for graph in X_train_val + X_test:
-        for node_type in graph.node_types:
-            if hasattr(graph[node_type], 'x') and graph[node_type].x is not None:
-                x = graph[node_type].x
-                x[:, IN_DEGREE_INDEX] = x[:, IN_DEGREE_INDEX] / (max_degrees[0] + 1e-12)
-                x[:, OUT_DEGREE_INDEX] = x[:, OUT_DEGREE_INDEX] / (max_degrees[0] + 1e-12)
-
-            if node_type == GraphNodeType.LOG_EVENT.value:
-                if hasattr(graph[node_type], 'x') and graph[node_type].x is not None:
-                    x = graph[node_type].x
-                    x[:, ARGS_NUM_INDEX] = x[:, ARGS_NUM_INDEX] / (max_args_num[0] + 1e-12)
-                    x[:, INPUT_SIZE_INDEX] = x[:, INPUT_SIZE_INDEX] / (max_inputs_size[0] + 1e-12)
-                    x[:, AMOUNTS_INDEX] = x[:, AMOUNTS_INDEX] / (max_amounts[0] + 1e-12)
+    normalization_stats = compute_normalization_stats(X_train_val)
+    apply_normalization(X_train_val + X_test, normalization_stats)
 
     # Optional runtime augmentation (applied AFTER normalization so noise operates in [0, 1] space).
     # Only active when --augment-factor > 0 is passed to the train command.
@@ -470,6 +494,23 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         )
         all_feature_sizes.update(feature_sizes)
 
+    # Shared BridgeDefender constructor kwargs, used both for fold training and
+    # for reconstructing each fold's model at test-time (and later, in saved checkpoints).
+    model_kwargs = dict(
+        first_layer_channels=model_args.get("first_layer_channels", 128),
+        hidden_channels=model_args.get("hidden_channels", 64),
+        out_channels=model_args.get("out_channels", 2),
+        dropout=model_args.get("dropout", 0.5),
+        input_drop=model_args.get("input_drop", 0.0),
+        att_drop=model_args.get("att_drop", 0.0),
+        n_fp_layers=model_args.get("n_fp_layers", 2),
+        n_mlp_layers=model_args.get("n_mlp_layers", 2),
+        act=model_args.get("act", 'relu'),
+        residual=model_args.get("residual", False),
+        pooling=model_args.get("pooling", 'mean'),
+        rm_semantic_fusion=model_args.get("rm_semantic_fusion", False),
+    )
+
     k_folds = kwargs.get("k_folds", 5)
     num_epochs = kwargs.get("num_epochs", 100)
     kfold = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=42)
@@ -511,18 +552,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         model = BridgeDefender(
             metapath_feature_sizes=all_feature_sizes,
             node_types=dataset[0].node_types,
-            first_layer_channels=model_args.get("first_layer_channels", 128),
-            hidden_channels=model_args.get("hidden_channels", 64),
-            out_channels=model_args.get("out_channels", 2),
-            dropout=model_args.get("dropout", 0.5),
-            input_drop=model_args.get("input_drop", 0.0),
-            att_drop=model_args.get("att_drop", 0.0),
-            n_fp_layers=model_args.get("n_fp_layers", 2),
-            n_mlp_layers=model_args.get("n_mlp_layers", 2),
-            act=model_args.get("act", 'relu'),
-            residual=model_args.get("residual", False),
-            pooling=model_args.get("pooling", 'mean'),
-            rm_semantic_fusion=model_args.get("rm_semantic_fusion", False),
+            **model_kwargs,
         ).to(device)
         optimizer = torch.optim.Adam(
             model.parameters(),
@@ -618,6 +648,21 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         if early_stopping.best_model_state is not None:
             fold_model_states.append((fold, early_stopping.best_model_state))
 
+            checkpoint = {
+                "fold": fold,
+                "model_state_dict": early_stopping.best_model_state,
+                "model_kwargs": model_kwargs,
+                "metapaths": metapaths,
+                "metapath_feature_sizes": all_feature_sizes,
+                "base_feature_dims": base_feature_dims,
+                "expected_node_types": expected_node_types,
+                "node_types": dataset[0].node_types,
+                "normalization": normalization_stats,
+                "dataset_type": dataset_type,
+            }
+            saved_path = reporter.save_model(fold, checkpoint)
+            print(f"Saved fold {fold + 1} best model to {saved_path}")
+
         reporter.record_fold_duration(fold, time.perf_counter() - fold_start_time)
         reporter.flush_charts()
 
@@ -641,18 +686,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         fold_model = BridgeDefender(
             metapath_feature_sizes=all_feature_sizes,
             node_types=dataset[0].node_types,
-            first_layer_channels=model_args.get("first_layer_channels", 128),
-            hidden_channels=model_args.get("hidden_channels", 64),
-            out_channels=model_args.get("out_channels", 2),
-            dropout=model_args.get("dropout", 0.5),
-            input_drop=model_args.get("input_drop", 0.0),
-            att_drop=model_args.get("att_drop", 0.0),
-            n_fp_layers=model_args.get("n_fp_layers", 2),
-            n_mlp_layers=model_args.get("n_mlp_layers", 2),
-            act=model_args.get("act", 'relu'),
-            residual=model_args.get("residual", False),
-            pooling=model_args.get("pooling", 'mean'),
-            rm_semantic_fusion=model_args.get("rm_semantic_fusion", False),
+            **model_kwargs,
         ).to(device)
         fold_model.load_state_dict({k: v.to(device) for k, v in model_state.items()})
         fold_model.eval()
