@@ -522,6 +522,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
             act=model_args.get("act", 'relu'),
             residual=model_args.get("residual", False),
             pooling=model_args.get("pooling", 'mean'),
+            rm_semantic_fusion=model_args.get("rm_semantic_fusion", False),
         ).to(device)
         optimizer = torch.optim.Adam(
             model.parameters(),
@@ -530,7 +531,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         )
         early_stopping = EarlyStopping(
             patience=kwargs.get("early_stopping", 10), 
-            delta=0, 
+            delta=0.00001, # Minimum change in the monitored quantity to allow for float precision issues
             device=device
         )
 
@@ -651,6 +652,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
             act=model_args.get("act", 'relu'),
             residual=model_args.get("residual", False),
             pooling=model_args.get("pooling", 'mean'),
+            rm_semantic_fusion=model_args.get("rm_semantic_fusion", False),
         ).to(device)
         fold_model.load_state_dict({k: v.to(device) for k, v in model_state.items()})
         fold_model.eval()

@@ -24,6 +24,7 @@ class BridgeDefender(nn.Module):
             act: str = 'relu',
             residual: bool = False,
             pooling: str = 'mean',
+            rm_semantic_fusion: bool = False,
     ):
         super(BridgeDefender, self).__init__()
         self.convs = nn.ModuleDict({})
@@ -48,7 +49,8 @@ class BridgeDefender(nn.Module):
                 att_drop=att_drop,
                 n_fp_layers=n_fp_layers,
                 act=act,
-                residual=residual
+                residual=residual,
+                rm_semantic_fusion=rm_semantic_fusion
             )
             # For each target node type, we will also perform pooling on the node embeddings to get a
             # type-level embedding.

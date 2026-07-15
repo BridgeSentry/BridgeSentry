@@ -42,6 +42,7 @@ class Cli:
             "act": args.activation,
             "residual": args.residual,
             "pooling": args.pooling,
+            "rm_semantic_fusion": args.rm_semantic_fusion,
             "learning_rate": args.learning_rate,
             "dme_threshold": args.dme_threshold,
         }
@@ -93,6 +94,7 @@ class Cli:
             ("activation",          "relu","act"),
             ("pooling",             "mean","pool"),
             ("residual",            False, "res"),
+            ("rm_semantic_fusion",  False, "nosf"),
             ("early_stopping",      None,  "es"),
             ("random_seed",         42,    "seed"),
         ]
@@ -286,6 +288,12 @@ class Cli:
             default="mean",
             choices=["mean", "max", "sum"],
             help="Pooling method to use for aggregating node embeddings into type-level embeddings (default: mean)",
+        )
+        training_parser.add_argument(
+            "--rm-semantic-fusion",
+            action="store_true",
+            help="Ablation: if used, removes the Semantic Fusion Transformer from SeHGNN and "
+                 "passes the feature projection output directly to the pooling step",
         )
         training_parser.add_argument(
             "--augment-factor",

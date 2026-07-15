@@ -83,13 +83,15 @@ class SeHGNN(nn.Module):
             att_drop: float = 0.0, 
             n_fp_layers: int = 2,
             act: str = 'relu',
-            residual: bool = False
+            residual: bool = False,
+            rm_semantic_fusion: bool = False
         ):
         super().__init__()
         self.metapaths = list(metapath_data_size.keys())
         self.num_mp_channels = len(self.metapaths)
         self.target_type = target_type
         self.residual = residual
+        self.rm_semantic_fusion = rm_semantic_fusion
         self.input_drop = nn.Dropout(input_drop)
 
         def mp_to_str(mp: EdgeMetapath) -> str:
@@ -136,7 +138,8 @@ class SeHGNN(nn.Module):
             self.feature_projection.append(nn.PReLU())
             self.feature_projection.append(nn.Dropout(dropout))
 
-        self.semantic_fusion = SemanticFusionTransformer(hidden_dim, num_heads=1, att_drop=att_drop, act=act)
+        self.semantic_fusion = None if rm_semantic_fusion else SemanticFusionTransformer(hidden_dim, num_heads=1, att_drop=att_drop, act=act)
+
         self.fc_after_concat = nn.Linear(self.num_mp_channels * hidden_dim, hidden_dim)
 
         if self.residual:
@@ -170,8 +173,10 @@ class SeHGNN(nn.Module):
         # Multi-layer feature Projection
         x = self.feature_projection(x)
 
-        # Transformer-based semantic Fusion
-        x = self.semantic_fusion(x).transpose(1, 2)
+        # Transformer-based semantic fusion (skipped entirely in the rm_semantic_fusion ablation)
+        if self.semantic_fusion is not None:
+            x = self.semantic_fusion(x)
+        x = x.transpose(1, 2)
         x = self.fc_after_concat(x.reshape(batch_size, self.fc_after_concat.in_features))
 
         # Residual connection over target node features
