@@ -68,6 +68,7 @@ class SingleTransactionsDataset(InMemoryDataset):
                 for row in reader:
                     self._data_index.append({
                         'graph_id': row['graph_id'],
+                        'bridge': row['bridge'],
                         'tx_hash': row['tx_hash'],
                         'file_name': row['file_name'],
                         'offset': int(row['offset']),
@@ -162,7 +163,7 @@ class SingleTransactionsDataset(InMemoryDataset):
         index_path = os.path.join(self.processed_dir, 'data_index.csv')
         index_file = open(index_path, 'w')
         writer = csv.writer(index_file)
-        writer.writerow(['index', 'graph_id', 'tx_hash', 'file_name', 'offset', 'synthetic'])
+        writer.writerow(['index', 'graph_id', 'bridge', 'tx_hash', 'file_name', 'offset', 'synthetic'])
 
         # We want to save up to 50 graphs in each file, so that:
         # a) We don't have a huge file that takes a long time to load / generate, and
@@ -197,7 +198,7 @@ class SingleTransactionsDataset(InMemoryDataset):
 
             # Save the graph position in the index file
             data_list.append(graph_data)
-            writer.writerow([index, blockchain_graph_id, row['tx_hash'], graph_file_name, offset, False])
+            writer.writerow([index, blockchain_graph_id, row['bridge'], row['tx_hash'], graph_file_name, offset, False])
             offset += 1
 
             # Add the new node and edge types to the sets

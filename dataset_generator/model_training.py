@@ -386,11 +386,17 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         print(f"Loaded {len(synthetic_graphs)} pre-generated synthetic graphs (will be added to train/val only).")
 
     # First, split the dataset into a training/validation set for each fold using K-Fold cross-validation,
-    # and a test set that is held out for final evaluation after training is complete.
-    print(f"Splitting dataset into train/val/test sets with test size 15% and {kwargs.get('k_folds', 5)} folds for cross-validation.")
+    # and (optionally) a test set that is held out for final evaluation after training is complete.
+    test_split = kwargs.get("test_split", 0.15)
     X = real_graphs
     y = [int(data.y.item()) for data in real_graphs]
-    X_train_val, X_test, y_train_val, y_test = train_test_split(X, y, test_size=0.15, random_state=42, stratify=y)
+    if test_split > 0:
+        print(f"Splitting dataset into train/val/test sets with test size {test_split:.0%} and {kwargs.get('k_folds', 5)} folds for cross-validation.")
+        X_train_val, X_test, y_train_val, y_test = train_test_split(X, y, test_size=test_split, random_state=42, stratify=y)
+    else:
+        print(f"--test-split 0: using the entire dataset for train/val with {kwargs.get('k_folds', 5)} folds for cross-validation (no held-out test set).")
+        X_train_val, y_train_val = X, y
+        X_test = []
 
     # Record how many REAL graphs are in the pool before appending synthetics.
     # StratifiedKFold will split only the first n_real_train_val entries; synthetic graphs
@@ -670,76 +676,6 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         print("No model was trained; skipping test evaluation.")
         return
 
-    print("=== Test set evaluation (averaged across K-fold models) ===")
-
-    test_loader = DataLoader(
-        X_test,
-        batch_size=model_args.get("batch_size", 32),
-        shuffle=False,
-        num_workers=kwargs.get("num_workers", 0),
-        collate_fn=collate_fn,
-    )
-    label_names = ["normal", "anomaly"]
-    fold_metrics = []
-
-    for fold_idx, model_state in fold_model_states:
-        fold_model = BridgeDefender(
-            metapath_feature_sizes=all_feature_sizes,
-            node_types=dataset[0].node_types,
-            **model_kwargs,
-        ).to(device)
-        fold_model.load_state_dict({k: v.to(device) for k, v in model_state.items()})
-        fold_model.eval()
-
-        test_loss = 0
-        all_labels = []
-        all_probs = []
-        with torch.no_grad():
-            for data in test_loader:
-                data = data.to(device)
-                output = fold_model(data, data.aggregated_features)
-                loss = criterion(output, data.y)
-                test_loss += loss.item()
-                probs = torch.softmax(output, dim=1)
-                all_labels.extend(data.y.detach().cpu().tolist())
-                all_probs.extend(probs.detach().cpu().tolist())
-
-        all_labels = np.array(all_labels)
-        all_probs = np.array(all_probs)
-        all_preds = all_probs.argmax(axis=1)
-
-        precision, recall, f1, _ = precision_recall_fscore_support(
-            all_labels, all_preds, labels=[0, 1], zero_division=0
-        )
-        acc = accuracy_score(all_labels, all_preds)
-        mcc = matthews_corrcoef(all_labels, all_preds)
-        roc_auc = roc_auc_score(all_labels, all_probs[:, 1])
-        pr_auc = average_precision_score(all_labels, all_probs[:, 1])
-        f2_anomaly = fbeta_score(precision[1], recall[1])
-        avg_test_loss = test_loss / len(test_loader)
-
-        fold_metrics.append({
-            "test_loss": avg_test_loss,
-            "accuracy": acc,
-            "precision_normal": precision[0],
-            "recall_normal": recall[0],
-            "f1_normal": f1[0],
-            "precision_anomaly": precision[1],
-            "recall_anomaly": recall[1],
-            "f1_anomaly": f1[1],
-            "f2_anomaly": f2_anomaly,
-            "mcc": mcc,
-            "roc_auc": roc_auc,
-            "pr_auc": pr_auc,
-        })
-        reporter.record_test_fold(fold_idx, fold_metrics[-1])
-
-        print(f"\n--- Fold {fold_idx + 1} test results ---")
-        print(f"Test loss: {avg_test_loss:.4f}")
-        print(classification_report(all_labels, all_preds, target_names=label_names, zero_division=0))
-        print(f"ROC-AUC: {roc_auc:.4f} | PR-AUC: {pr_auc:.4f} | MCC: {mcc:.4f}")
-
-    print("\n=== K-Fold test summary (mean ± std across folds) ===")
     metric_display = [
         ("test_loss",         "Test loss"),
         ("accuracy",          "Accuracy"),
@@ -754,8 +690,82 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         ("pr_auc",            "PR-AUC"),
         ("mcc",               "MCC"),
     ]
-    for key, label in metric_display:
-        values = [m[key] for m in fold_metrics]
-        print(f"  {label:<26} {np.mean(values):.4f} ± {np.std(values):.4f}")
+
+    if not X_test:
+        print("No held-out test set (--test-split 0): skipping test-set evaluation.")
+    else:
+        print("=== Test set evaluation (averaged across K-fold models) ===")
+
+        test_loader = DataLoader(
+            X_test,
+            batch_size=model_args.get("batch_size", 32),
+            shuffle=False,
+            num_workers=kwargs.get("num_workers", 0),
+            collate_fn=collate_fn,
+        )
+        label_names = ["normal", "anomaly"]
+        fold_metrics = []
+
+        for fold_idx, model_state in fold_model_states:
+            fold_model = BridgeDefender(
+                metapath_feature_sizes=all_feature_sizes,
+                node_types=dataset[0].node_types,
+                **model_kwargs,
+            ).to(device)
+            fold_model.load_state_dict({k: v.to(device) for k, v in model_state.items()})
+            fold_model.eval()
+
+            test_loss = 0
+            all_labels = []
+            all_probs = []
+            with torch.no_grad():
+                for data in test_loader:
+                    data = data.to(device)
+                    output = fold_model(data, data.aggregated_features)
+                    loss = criterion(output, data.y)
+                    test_loss += loss.item()
+                    probs = torch.softmax(output, dim=1)
+                    all_labels.extend(data.y.detach().cpu().tolist())
+                    all_probs.extend(probs.detach().cpu().tolist())
+
+            all_labels = np.array(all_labels)
+            all_probs = np.array(all_probs)
+            all_preds = all_probs.argmax(axis=1)
+
+            precision, recall, f1, _ = precision_recall_fscore_support(
+                all_labels, all_preds, labels=[0, 1], zero_division=0
+            )
+            acc = accuracy_score(all_labels, all_preds)
+            mcc = matthews_corrcoef(all_labels, all_preds)
+            roc_auc = roc_auc_score(all_labels, all_probs[:, 1])
+            pr_auc = average_precision_score(all_labels, all_probs[:, 1])
+            f2_anomaly = fbeta_score(precision[1], recall[1])
+            avg_test_loss = test_loss / len(test_loader)
+
+            fold_metrics.append({
+                "test_loss": avg_test_loss,
+                "accuracy": acc,
+                "precision_normal": precision[0],
+                "recall_normal": recall[0],
+                "f1_normal": f1[0],
+                "precision_anomaly": precision[1],
+                "recall_anomaly": recall[1],
+                "f1_anomaly": f1[1],
+                "f2_anomaly": f2_anomaly,
+                "mcc": mcc,
+                "roc_auc": roc_auc,
+                "pr_auc": pr_auc,
+            })
+            reporter.record_test_fold(fold_idx, fold_metrics[-1])
+
+            print(f"\n--- Fold {fold_idx + 1} test results ---")
+            print(f"Test loss: {avg_test_loss:.4f}")
+            print(classification_report(all_labels, all_preds, target_names=label_names, zero_division=0))
+            print(f"ROC-AUC: {roc_auc:.4f} | PR-AUC: {pr_auc:.4f} | MCC: {mcc:.4f}")
+
+        print("\n=== K-Fold test summary (mean ± std across folds) ===")
+        for key, label in metric_display:
+            values = [m[key] for m in fold_metrics]
+            print(f"  {label:<26} {np.mean(values):.4f} ± {np.std(values):.4f}")
 
     reporter.save(metric_display)

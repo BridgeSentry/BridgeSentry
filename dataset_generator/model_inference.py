@@ -45,6 +45,7 @@ def predict(
     checkpoint: dict,
     device: str | torch.device = "cpu",
     batch_size: int = 32,
+    num_workers: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Run inference on graphs already prepared via `prepare_graphs`.
 
@@ -60,7 +61,7 @@ def predict(
         }
         return pyg_batch
 
-    loader = DataLoader(graphs, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
+    loader = DataLoader(graphs, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=collate_fn)
 
     all_probs = []
     for data in loader:

@@ -9,6 +9,7 @@ from dataset_generator.types import DATASET_TYPE
 from utils.utils import get_enum_instance
 
 from dataset_generator.model_training import train
+from dataset_generator.model_evaluation import evaluate
 
 class Cli:
     CLASS_NAME = "Cli"
@@ -56,6 +57,7 @@ class Cli:
             "augment_factor": args.augment_factor,
             "run_name_prefix": Cli._build_run_name_prefix(args),
             "random_seed": args.random_seed,
+            "test_split": args.test_split,
         }
 
         train(
@@ -65,6 +67,17 @@ class Cli:
             model_args=model_args,
             reports_root=reports_root,
             **kwargs
+        )
+
+    def evaluate_model(args):
+        evaluate(
+            load_data=args.load_data,
+            checkpoint_dir=args.checkpoint_data,
+            tags=args.tags,
+            device=args.device,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            force_reload=args.force_reload,
         )
 
     def _build_run_name_prefix(args) -> str:
@@ -97,6 +110,7 @@ class Cli:
             ("rm_semantic_fusion",  False, "nosf"),
             ("early_stopping",      None,  "es"),
             ("random_seed",         42,    "seed"),
+            ("test_split",          0.15,  "ts"),
         ]
         for attr, default, short in non_default_params:
             value = getattr(args, attr)
@@ -216,6 +230,14 @@ class Cli:
             help="Threshold for the Differential Meta-Path Extraction (default: 0.5)",
         )
         training_parser.add_argument(
+            "--test-split",
+            type=float,
+            default=0.15,
+            help="Fraction of the real-graph dataset held out as a final test set "
+                 "(default: 0.15). Set to 0 to use the entire dataset for "
+                 "training/K-fold validation and skip test-set evaluation entirely.",
+        )
+        training_parser.add_argument(
             "--learning-rate",
             type=float,
             default=0.01,
@@ -308,6 +330,54 @@ class Cli:
             help="Random seed for reproducibility (default: 42)",
         )
         training_parser.set_defaults(func=Cli.train_model)
+
+        eval_parser = subparsers.add_parser(
+            "eval",
+            help="Evaluate saved fold checkpoints (from a training run) against a dataset",
+        )
+        eval_parser.add_argument(
+            "--load-data",
+            type=str,
+            required=True,
+            help="The directory where the graph dataset to evaluate is located.",
+        )
+        eval_parser.add_argument(
+            "--checkpoint-data",
+            type=str,
+            required=True,
+            help="The directory containing the fold checkpoints to evaluate (a training run's 'models/' folder).",
+        )
+        eval_parser.add_argument(
+            "--device",
+            type=str,
+            choices=["cpu", "cuda"],
+            default="cuda" if torch.cuda.is_available() else "cpu",
+            help="Device to use for evaluation (default: 'cuda' if available, otherwise 'cpu')",
+        )
+        eval_parser.add_argument(
+            "--tags",
+            type=str,
+            default=None,
+            help="Comma-separated tags to include in the evaluation report folder name.",
+        )
+        eval_parser.add_argument(
+            "--batch-size",
+            type=int,
+            default=32,
+            help="Batch size to use for evaluation (default: 32)",
+        )
+        eval_parser.add_argument(
+            "--num-workers",
+            type=int,
+            default=0,
+            help="Number of worker processes for data loading (default: 0, i.e., no multiprocessing)",
+        )
+        eval_parser.add_argument(
+            "-f", "--force-reload",
+            action="store_true",
+            help="Force reload the graph dataset even if it already exists (default: False)",
+        )
+        eval_parser.set_defaults(func=Cli.evaluate_model)
 
         args = parser.parse_args()
         if args.action:

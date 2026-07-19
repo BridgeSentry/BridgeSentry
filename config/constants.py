@@ -19,3 +19,4 @@ class Bridge(Enum):
     THORCHAIN = "thorchain"
     THORCHAIN2 = "thorchain2"
     THORCHAIN3 = "thorchain3"
+    RONIN1 = "ronin1"
