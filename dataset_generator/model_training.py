@@ -646,7 +646,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
                     "pr_auc": val_pr_auc,
                 })
 
-                early_stopping(val_pr_auc, val_f2_anomaly, model)
+                early_stopping(val_f2_anomaly, val_pr_auc, model)
                 if kwargs.get("early_stopping", None) is not None and early_stopping.early_stop:
                     print(f"Early stopping triggered at epoch {epoch + 1} for fold {fold + 1}.")
                     break
