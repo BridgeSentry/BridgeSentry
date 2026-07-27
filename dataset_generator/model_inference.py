@@ -49,9 +49,20 @@ def predict(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Run inference on graphs already prepared via `prepare_graphs`.
 
-    Returns (probs, preds): probs is [N, 2] softmax output, preds is [N] argmax class.
+    Returns (scores, preds):
+      - scores: [N] Deep SAD anomaly score, the squared distance from phi(x) to the
+        hypersphere centre. Higher means a larger deviation from learned normality.
+        Unbounded above — it is a distance, not a probability.
+      - preds: [N] binary labels, `scores > checkpoint["threshold"]`, using the
+        operating point fitted on the validation fold during training.
     """
     metapaths = checkpoint["metapaths"]
+    threshold = checkpoint.get("threshold")
+    if threshold is None:
+        raise KeyError(
+            "Checkpoint has no 'threshold'; it predates the Deep SAD head and cannot be "
+            "used for binary prediction."
+        )
 
     def collate_fn(batch: list[HeteroData]) -> Batch:
         pyg_batch = Batch.from_data_list(batch)
@@ -63,12 +74,12 @@ def predict(
 
     loader = DataLoader(graphs, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=collate_fn)
 
-    all_probs = []
+    all_scores = []
     for data in loader:
         data = data.to(device)
-        output = model(data, data.aggregated_features)
-        all_probs.append(torch.softmax(output, dim=1).cpu())
+        z = model(data, data.aggregated_features)
+        all_scores.append(model.score(z).cpu())
 
-    probs = torch.cat(all_probs, dim=0)
-    preds = probs.argmax(dim=1)
-    return probs, preds
+    scores = torch.cat(all_scores, dim=0)
+    preds = (scores > threshold).long()
+    return scores, preds

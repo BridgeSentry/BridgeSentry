@@ -11,15 +11,17 @@ from torch_geometric.data import HeteroData
 from dataset_generator.types import EdgeMetapath
 
 class LinearProjectionPerMetapath(nn.Module):
+    # Bias-free by design: Deep SAD admits the trivial solution phi == c if any
+    # affine offset can absorb the input, so nothing on the path to the embedding
+    # may carry a bias term.
     def __init__(self, in_dim: int, out_dim: int, num_metapaths: int):
         super(LinearProjectionPerMetapath, self).__init__()
         self.W = nn.Parameter(torch.randn(num_metapaths, in_dim, out_dim))
-        self.b = nn.Parameter(torch.zeros(num_metapaths, out_dim))
         nn.init.xavier_uniform_(self.W)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x shape: [batch, num_metapaths, in_dim]
-        out = torch.einsum("bcm,cmn->bcn", x, self.W) + self.b.unsqueeze(0)
+        out = torch.einsum("bcm,cmn->bcn", x, self.W)
         return out
 
 class SemanticFusionTransformer(nn.Module):
@@ -30,9 +32,9 @@ class SemanticFusionTransformer(nn.Module):
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
 
-        self.query = nn.Linear(self.hidden_dim, self.hidden_dim // 4)
-        self.key = nn.Linear(self.hidden_dim, self.hidden_dim // 4)
-        self.value = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.query = nn.Linear(self.hidden_dim, self.hidden_dim // 4, bias=False)
+        self.key = nn.Linear(self.hidden_dim, self.hidden_dim // 4, bias=False)
+        self.value = nn.Linear(self.hidden_dim, self.hidden_dim, bias=False)
 
         self.gamma = nn.Parameter(torch.tensor([0.]))
         self.att_drop = nn.Dropout(att_drop)
@@ -123,27 +125,29 @@ class SeHGNN(nn.Module):
             nn.init.uniform_(param, -0.5, 0.5)
             self.embeddings[name] = param
 
-        # PyG's lazy initialization allows us to skip explicitly defining input dimensions for embeddings
+        # PyG's lazy initialization allows us to skip explicitly defining input dimensions for embeddings.
+        # LayerNorm runs with elementwise_affine=False: its learnable shift would be a bias term,
+        # which Deep SAD forbids on the path to the embedding (see LinearProjectionPerMetapath).
         self.feature_projection = nn.Sequential(
             LinearProjectionPerMetapath(num_features, hidden_dim, self.num_mp_channels),
-            nn.LayerNorm([self.num_mp_channels, hidden_dim]),
+            nn.LayerNorm([self.num_mp_channels, hidden_dim], elementwise_affine=False),
             nn.PReLU(),
             nn.Dropout(dropout)
         )
-        
+
         # Extend feature projection if needed
         for _ in range(n_fp_layers - 1):
             self.feature_projection.append(LinearProjectionPerMetapath(hidden_dim, hidden_dim, self.num_mp_channels))
-            self.feature_projection.append(nn.LayerNorm([self.num_mp_channels, hidden_dim]))
+            self.feature_projection.append(nn.LayerNorm([self.num_mp_channels, hidden_dim], elementwise_affine=False))
             self.feature_projection.append(nn.PReLU())
             self.feature_projection.append(nn.Dropout(dropout))
 
         self.semantic_fusion = None if rm_semantic_fusion else SemanticFusionTransformer(hidden_dim, num_heads=1, att_drop=att_drop, act=act)
 
-        self.fc_after_concat = nn.Linear(self.num_mp_channels * hidden_dim, hidden_dim)
+        self.fc_after_concat = nn.Linear(self.num_mp_channels * hidden_dim, hidden_dim, bias=False)
 
         if self.residual:
-            self.res_fc = nn.Linear(num_features, hidden_dim)
+            self.res_fc = nn.Linear(num_features, hidden_dim, bias=False)
 
     def forward(
         self,

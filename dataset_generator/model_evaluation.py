@@ -13,6 +13,7 @@ from sklearn.metrics import (
 )
 
 from dataset_generator.evaluation_reporter import EvaluationReporter
+from dataset_generator.model.deep_sad import DEFAULT_EPS, deep_sad_loss_from_scores
 from dataset_generator.model_inference import build_model_from_checkpoint, load_checkpoint, predict, prepare_graphs
 from dataset_generator.model_training import fbeta_score
 from dataset_generator.types import DATASET_CLASS
@@ -67,31 +68,39 @@ def evaluate(
 
     fold_metrics = []
     fold_preds: dict[int, np.ndarray] = {}
+    fold_scores: dict[int, np.ndarray] = {}
 
     for checkpoint in checkpoints:
         fold_num = checkpoint["fold"] + 1
         model = build_model_from_checkpoint(checkpoint, device)
-        probs, preds = predict(model, prepared_graphs, checkpoint, device, batch_size, num_workers)
+        scores, preds = predict(model, prepared_graphs, checkpoint, device, batch_size, num_workers)
         preds_np = preds.numpy()
+        scores_np = scores.numpy()
         fold_preds[fold_num] = preds_np
+        fold_scores[fold_num] = scores_np
 
-        # Equivalent to an unweighted torch.nn.CrossEntropyLoss() over the dataset,
-        # computed directly from the softmax probs already produced by predict().
-        true_probs = probs[torch.arange(len(labels_t)), labels_t]
-        loss = -torch.log(true_probs.clamp_min(1e-12)).mean().item()
+        # Deep SAD objective evaluated on this dataset. Computed from the scores
+        # (which are already the squared distances the loss is built from), so it
+        # needs no second forward pass.
+        loss = deep_sad_loss_from_scores(
+            scores, labels_t, eta=checkpoint.get("eta", 1.0), eps=checkpoint.get("deep_sad_eps", DEFAULT_EPS)
+        ).item()
 
         precision, recall, f1, _ = precision_recall_fscore_support(
             labels, preds_np, labels=[0, 1], zero_division=0
         )
         acc = accuracy_score(labels, preds_np)
         mcc = matthews_corrcoef(labels, preds_np)
-        roc_auc = roc_auc_score(labels, probs[:, 1].numpy())
-        pr_auc = average_precision_score(labels, probs[:, 1].numpy())
+        # The score is a distance: higher already means more anomalous, so it feeds
+        # the ranking metrics directly.
+        roc_auc = roc_auc_score(labels, scores_np)
+        pr_auc = average_precision_score(labels, scores_np)
         f2_anomaly = fbeta_score(precision[1], recall[1])
 
         fold_metrics.append({
             "fold": fold_num,
             "loss": loss,
+            "threshold": checkpoint["threshold"],
             "accuracy": acc,
             "precision_normal": precision[0],
             "recall_normal": recall[0],
@@ -111,6 +120,6 @@ def evaluate(
         print(f"Fold {fold_num}: accuracy={acc:.4f} roc_auc={roc_auc:.4f} pr_auc={pr_auc:.4f} mcc={mcc:.4f}")
 
     reporter.save_eval_stats(fold_metrics)
-    reporter.save_infer_report(bridges, tx_hashes, labels, fold_preds)
+    reporter.save_infer_report(bridges, tx_hashes, labels, fold_preds, fold_scores)
 
     print(f"\nEvaluation report saved to: {reporter.run_dir}")

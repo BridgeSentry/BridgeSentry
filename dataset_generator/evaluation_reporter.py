@@ -28,6 +28,7 @@ EVAL_METRIC_COLUMNS = [
     "roc_auc",
     "pr_auc",
     "mcc",
+    "threshold",
 ]
 
 
@@ -92,14 +93,33 @@ class EvaluationReporter:
         tx_hashes: list[str],
         labels: np.ndarray,
         fold_preds: dict[int, np.ndarray],
+        fold_scores: dict[int, np.ndarray] | None = None,
     ) -> None:
+        """Write the per-transaction report.
+
+        Each fold contributes a binary `fold_<n>` column and, when `fold_scores` is
+        given, the raw Deep SAD anomaly score in `fold_<n>_score`. Carrying the score
+        lets downstream analysis re-threshold offline instead of being locked to the
+        operating point chosen during training.
+        """
         fold_numbers = sorted(fold_preds.keys())
         path = os.path.join(self.run_dir, "infer_report.csv")
+
+        header = ["bridge", "tx_hash", "true_label"]
+        for n in fold_numbers:
+            header.append(f"fold_{n}")
+            if fold_scores is not None:
+                header.append(f"fold_{n}_score")
+
         with open(path, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["bridge", "tx_hash", "true_label"] + [f"fold_{n}" for n in fold_numbers])
+            writer.writerow(header)
             for i, (bridge, tx_hash) in enumerate(zip(bridges, tx_hashes)):
-                row = [bridge, tx_hash, int(labels[i])] + [int(fold_preds[n][i]) for n in fold_numbers]
+                row = [bridge, tx_hash, int(labels[i])]
+                for n in fold_numbers:
+                    row.append(int(fold_preds[n][i]))
+                    if fold_scores is not None:
+                        row.append(float(fold_scores[n][i]))
                 writer.writerow(row)
 
     def save_confusion_matrix(self, fold: int, labels: np.ndarray, preds: np.ndarray) -> None:

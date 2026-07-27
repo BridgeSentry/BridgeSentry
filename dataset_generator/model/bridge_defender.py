@@ -1,12 +1,21 @@
 import torch
 import torch.nn as nn
-from torch_geometric.nn import MLP
 
 from torch_geometric.data import HeteroData
 from torch_geometric.nn import global_mean_pool, global_max_pool, global_add_pool
 
+from dataset_generator.model.deep_sad import anomaly_scores
 from dataset_generator.model.sehgnn_conv import SeHGNN
 from dataset_generator.types import EdgeMetapath
+
+# Bounded activations let the network saturate onto the centre, which is one of the
+# two routes to a hypersphere collapse (the other being bias terms).
+UNBOUNDED_ACTIVATIONS = {
+    "relu": nn.ReLU,
+    "leaky_relu": lambda: nn.LeakyReLU(0.1),
+    "prelu": nn.PReLU,
+}
+
 
 class BridgeDefender(nn.Module):
     def __init__(
@@ -15,7 +24,7 @@ class BridgeDefender(nn.Module):
             node_types: list[str],
             first_layer_channels: int,
             hidden_channels: int,
-            out_channels: int,
+            rep_dim: int = 64,
             dropout: float = 0.5,
             input_drop: float = 0.0,
             att_drop: float = 0.0,
@@ -30,6 +39,7 @@ class BridgeDefender(nn.Module):
         self.convs = nn.ModuleDict({})
         self.pooling = pooling
         self.hidden_channels = hidden_channels
+        self.rep_dim = rep_dim
 
         # Use SeHGNNConv to generate node embeddings for each target node type, based on the pre-computed meta-path features.
         non_null_node_types = len(node_types)
@@ -55,16 +65,31 @@ class BridgeDefender(nn.Module):
             # For each target node type, we will also perform pooling on the node embeddings to get a
             # type-level embedding.
 
-        # After obtaining type-level embeddings, we will concatenate them and pass through an MLP for final classification.
-        self.classifier = MLP(
-            in_channels=non_null_node_types * hidden_channels,
-            hidden_channels=hidden_channels,
-            out_channels=out_channels,
-            num_layers=n_mlp_layers,
-            act=act,
-            dropout=dropout,
-            norm="layer_norm"
-        )
+        # After obtaining type-level embeddings, we concatenate them and project into the
+        # rep_dim latent space where the Deep SAD hypersphere is coded.
+        # According to the paper, the activation function for the final layer should be unbounded.
+        if act not in UNBOUNDED_ACTIVATIONS:
+            raise ValueError(
+                f"Activation '{act}' is not supported by the Deep SAD head. "
+                f"Bounded activations permit a hypersphere collapse; choose one of "
+                f"{sorted(UNBOUNDED_ACTIVATIONS)}."
+            )
+        activation = UNBOUNDED_ACTIVATIONS[act]
+
+        head_layers: list[nn.Module] = []
+        in_dim = non_null_node_types * hidden_channels
+        for _ in range(max(n_mlp_layers - 1, 0)):
+            head_layers.append(nn.Linear(in_dim, hidden_channels, bias=False))
+            head_layers.append(activation())
+            head_layers.append(nn.Dropout(dropout))
+            in_dim = hidden_channels
+        head_layers.append(nn.Linear(in_dim, rep_dim, bias=False))
+        self.head = nn.Sequential(*head_layers)
+
+        # The hypersphere centre is fixed after initialisation, never optimised.
+        # At a later time, the inclusion of an autoencoder head could be considered
+        # to stabilise the centre and improve performance.
+        self.register_buffer("center", torch.zeros(rep_dim))
 
 
     def forward(
@@ -121,12 +146,54 @@ class BridgeDefender(nn.Module):
         if len(type_embeddings) == 0:
             return torch.empty(0)
 
-        # concatenate type-level embeddings and optionally pass through an MLP
+        # concatenate type-level embeddings and project into the latent space
         type_level = torch.cat(type_embeddings, dim=-1)
 
-        x = self.classifier(type_level)
+        z = self.head(type_level)
 
-        # Output shape should be [batch_size, num_classes]
-        # This can then be used for graph classification by using
-        # softmax during inference and cross-entropy loss during training.
-        return x
+        # Output shape is [batch_size, rep_dim]: the latent representation phi(x).
+        # Train it with deep_sad_loss, and score graphs with `self.score(z)`.
+        return z
+
+    def score(self, z: torch.Tensor) -> torch.Tensor:
+        """Anomaly score for latent representations: squared distance to the centre."""
+        return anomaly_scores(z, self.center)
+
+    @torch.no_grad()
+    def init_center(self, loader, aggregated_features_attr: str = "aggregated_features", eps: float = 0.1) -> torch.Tensor:
+        """Fix the hypersphere centre as the mean of phi(x) over `loader`.
+
+        `loader` must yield only *normal* graphs: the centre defines what normality
+        looks like, so letting known anomalies drag it would defeat the objective.
+
+        Latent dimensions that land too close to zero are nudged out to +/-eps. A
+        near-zero coordinate is a direction the network can trivially zero out to
+        shrink every distance at once, which is the first step towards a collapse.
+
+        Returns the centre, and also stores it on the module.
+        """
+        was_training = self.training
+        self.eval()
+
+        device = self.center.device
+        total = torch.zeros(self.rep_dim, device=device)
+        count = 0
+        for data in loader:
+            data = data.to(device)
+            z = self(data, getattr(data, aggregated_features_attr))
+            total += z.sum(dim=0)
+            count += z.size(0)
+
+        if count == 0:
+            raise ValueError(
+                "Cannot initialise the Deep SAD centre: the loader yielded no normal graphs."
+            )
+
+        center = total / count
+        center[(center.abs() < eps) & (center < 0)] = -eps
+        center[(center.abs() < eps) & (center >= 0)] = eps
+
+        self.center.copy_(center)
+        if was_training:
+            self.train()
+        return self.center

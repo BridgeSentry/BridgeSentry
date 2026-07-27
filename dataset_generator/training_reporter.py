@@ -99,6 +99,12 @@ class TrainingReporter:
         "mcc",
         "roc_auc",
         "pr_auc",
+        # Deep SAD: the fitted decision threshold, plus the mean distance-to-centre
+        # per class. The two distance series are the hypersphere-collapse trace — if
+        # they converge on 0 together, the encoder found the trivial phi == c.
+        "threshold",
+        "dist_normal_mean",
+        "dist_anomaly_mean",
     ]
 
     # Test metrics recorded per fold (matches keys in record_test_fold)
@@ -116,6 +122,7 @@ class TrainingReporter:
         "roc_auc",
         "pr_auc",
         "mcc",
+        "threshold",
     ]
 
     def __init__(

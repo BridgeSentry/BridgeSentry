@@ -10,24 +10,35 @@ class EarlyStopping:
         self.counter = 0
         self.device = device
         self.best_model_state = None
+        # Per-epoch state that must stay paired with best_model_state — notably the
+        # Deep SAD decision threshold, which is refitted every epoch on that epoch's
+        # validation scores. Since the score scale drifts as the hypersphere tightens,
+        # a threshold from a later epoch is meaningless for earlier weights, so it is
+        # captured here rather than read off the trainer at the end of the fold.
+        self.best_extra = None
 
-    def __call__(self, f2_score: float, tiebreak_metric: float, model):
+    def __call__(self, f2_score: float, tiebreak_metric: float, model, extra: dict | None = None):
+        # `extra` never influences the comparisons below; it is only carried alongside
+        # whichever weights win.
         if self.best_f2_score is None:
             self.best_f2_score = f2_score
             self.best_tiebreak_metric = tiebreak_metric
             self.best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            self.best_extra = extra
             return
 
         if f2_score > self.best_f2_score + self.delta:
             self.best_f2_score = f2_score
             self.best_tiebreak_metric = tiebreak_metric
             self.best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            self.best_extra = extra
             self.counter = 0
         elif f2_score >= self.best_f2_score - self.delta and tiebreak_metric > self.best_tiebreak_metric + self.delta:
-            # PR-AUC tied the current best (within delta): prefer the checkpoint
-            # with the higher tiebreak metric among equally-good-by-PR-AUC epochs.
+            # F2 tied the current best (within delta): prefer the checkpoint
+            # with the higher tiebreak metric among equally-good-by-F2 epochs.
             self.best_tiebreak_metric = tiebreak_metric
             self.best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            self.best_extra = extra
             self.counter += 1  # Don't reset counter here, as this should only be a tiebreaker, not a new best epoch.
         else:
             self.counter += 1

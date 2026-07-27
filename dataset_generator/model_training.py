@@ -20,6 +20,12 @@ from typing import DefaultDict
 from dataset_generator.early_stopping import EarlyStopping
 from dataset_generator.feature_extraction import AMOUNTS_INDEX, ARGS_NUM_INDEX, IN_DEGREE_INDEX, INPUT_SIZE_INDEX, OUT_DEGREE_INDEX
 from dataset_generator.model.bridge_defender import BridgeDefender
+from dataset_generator.model.deep_sad import (
+    DEFAULT_EPS,
+    deep_sad_loss,
+    f2_optimal_threshold,
+    pretrain_autoencoder,
+)
 from dataset_generator.types import DATASET_TYPE, CanonicalEdgeType, EdgeMetapath
 from repository.db.graph_label import GraphNodeType
 from dataset_generator.types import DATASET_CLASS
@@ -362,12 +368,13 @@ def apply_normalization(graphs: list[HeteroData], stats: dict[str, torch.Tensor]
                 x[:, IN_DEGREE_INDEX] = x[:, IN_DEGREE_INDEX] / (max_degrees[0] + 1e-12)
                 x[:, OUT_DEGREE_INDEX] = x[:, OUT_DEGREE_INDEX] / (max_degrees[0] + 1e-12)
 
-            if node_type == GraphNodeType.LOG_EVENT.value:
-                if hasattr(graph[node_type], 'x') and graph[node_type].x is not None:
-                    x = graph[node_type].x
-                    x[:, ARGS_NUM_INDEX] = x[:, ARGS_NUM_INDEX] / (max_args_num[0] + 1e-12)
-                    x[:, INPUT_SIZE_INDEX] = x[:, INPUT_SIZE_INDEX] / (max_inputs_size[0] + 1e-12)
-                    x[:, AMOUNTS_INDEX] = x[:, AMOUNTS_INDEX] / (max_amounts[0] + 1e-12)
+            if node_type == GraphNodeType.LOG_EVENT.value \
+                and hasattr(graph[node_type], 'x') \
+                and graph[node_type].x is not None:
+                x = graph[node_type].x
+                x[:, ARGS_NUM_INDEX] = x[:, ARGS_NUM_INDEX] / (max_args_num[0] + 1e-12)
+                x[:, INPUT_SIZE_INDEX] = x[:, INPUT_SIZE_INDEX] / (max_inputs_size[0] + 1e-12)
+                x[:, AMOUNTS_INDEX] = x[:, AMOUNTS_INDEX] / (max_amounts[0] + 1e-12)
 
 
 def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, model_args: dict, reports_root: str, **kwargs):
@@ -449,13 +456,11 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         print(f"Training set after runtime augmentation: {len(X_train_val)} graphs "
               f"({sum(y_train_val)} anomalies).")
 
-    # Determine the graph label weights based on the ratio of each label in the dataset
-    # Less frequent labels (i.e. anomalies) should have higher weights to penalize
-    # misclassification more than the normal label
+    # Note: no class weighting is performed. Deep SAD balances the labeled-anomaly term against
+    # the normal term through "eta" in the loss itself, so the inverse-frequency weights
+    # the cross-entropy head needed no longer apply.
     label_counts = torch.bincount(torch.tensor(y_train_val), minlength=2)
-    class_weights = 1.0 / (label_counts + 1e-12)  # Add small value to avoid division by zero
-    class_weights = class_weights / class_weights.sum()  # Normalize to sum to 1
-    class_weights = class_weights.to(device)
+    print(f"Label distribution in train/val pool: {int(label_counts[0])} normal, {int(label_counts[1])} anomaly.")
 
     # Perform Differential Meta-path Extraction on the training/validation set
     # to identify the most discriminative meta-paths for the classification task
@@ -482,7 +487,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
 
     expected_node_types = sorted(base_feature_dims.keys())
 
-    all_feature_sizes = dict()
+    all_feature_sizes = {}
     for data in X_train_val:
         data.aggregated_features, feature_sizes = aggregate_metapath_features(
             data,
@@ -502,20 +507,20 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
 
     # Shared BridgeDefender constructor kwargs, used both for fold training and
     # for reconstructing each fold's model at test-time (and later, in saved checkpoints).
-    model_kwargs = dict(
-        first_layer_channels=model_args.get("first_layer_channels", 128),
-        hidden_channels=model_args.get("hidden_channels", 64),
-        out_channels=model_args.get("out_channels", 2),
-        dropout=model_args.get("dropout", 0.5),
-        input_drop=model_args.get("input_drop", 0.0),
-        att_drop=model_args.get("att_drop", 0.0),
-        n_fp_layers=model_args.get("n_fp_layers", 2),
-        n_mlp_layers=model_args.get("n_mlp_layers", 2),
-        act=model_args.get("act", 'relu'),
-        residual=model_args.get("residual", False),
-        pooling=model_args.get("pooling", 'mean'),
-        rm_semantic_fusion=model_args.get("rm_semantic_fusion", False),
-    )
+    model_kwargs = {
+        'first_layer_channels': model_args.get("first_layer_channels", 128),
+        'hidden_channels': model_args.get("hidden_channels", 64),
+        'rep_dim': model_args.get("rep_dim", 64),
+        'dropout': model_args.get("dropout", 0.5),
+        'input_drop': model_args.get("input_drop", 0.0),
+        'att_drop': model_args.get("att_drop", 0.0),
+        'n_fp_layers': model_args.get("n_fp_layers", 2),
+        'n_mlp_layers': model_args.get("n_mlp_layers", 2),
+        'act': model_args.get("act", 'relu'),
+        'residual': model_args.get("residual", False),
+        'pooling': model_args.get("pooling", 'mean'),
+        'rm_semantic_fusion': model_args.get("rm_semantic_fusion", False),
+    }
 
     k_folds = kwargs.get("k_folds", 5)
     num_epochs = kwargs.get("num_epochs", 100)
@@ -534,7 +539,10 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
     )
     reporter.save_metapath_report(metapaths, metapath_differential_values)
 
-    criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
+    # Deep SAD hyperparameters. eta=0 drops the labeled-anomaly term entirely,
+    # degenerating to unsupervised Deep SVDD (useful as an ablation baseline).
+    eta = model_args.get("eta", 1.0)
+    eps = model_args.get("deep_sad_eps", DEFAULT_EPS)
 
     def collate_fn(batch: list[HeteroData]) -> Batch:
         pyg_batch = Batch.from_data_list(batch)
@@ -563,7 +571,10 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         optimizer = torch.optim.Adam(
             model.parameters(),
             lr=model_args.get("learning_rate", 0.01),
-            weight_decay=model_args.get("weight_decay", 5e-4),
+            # Deep SVDD/SAD is sensitive to weight decay: shrinking the weights also
+            # shrinks the hypersphere, so the paper's lambda=1e-6 is far smaller than
+            # what the cross-entropy head used.
+            weight_decay=model_args.get("weight_decay", 1e-6),
         )
         early_stopping = EarlyStopping(
             patience=kwargs.get("early_stopping", 10), 
@@ -577,14 +588,34 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         train_loader = DataLoader(train_subset, batch_size=model_args.get("batch_size", 32), shuffle=True, num_workers=kwargs.get("num_workers", 0), collate_fn=collate_fn)
         val_loader = DataLoader(val_subset, batch_size=model_args.get("batch_size", 32), shuffle=False, num_workers=kwargs.get("num_workers", 0), collate_fn=collate_fn)
 
+        if kwargs.get("ae_pretrain", False):
+            # Reserved hook — raises NotImplementedError until the decoder exists.
+            pretrain_autoencoder(model, train_loader, device=device)
+
+        # Fix the hypersphere centre from a forward pass over this fold's *normal*
+        # training graphs only. Anomalies are excluded: the centre is the definition
+        # of normality, so letting known attacks pull on it is self-defeating.
+        normal_train_idx = [i for i in train_idx if y_train_val[int(i)] == 0]
+        if not normal_train_idx:
+            raise ValueError(f"Fold {fold + 1} has no normal training graphs; cannot initialise the centre.")
+        center_loader = DataLoader(
+            torch.utils.data.Subset(X_train_val, normal_train_idx),
+            batch_size=model_args.get("batch_size", 32),
+            shuffle=False,
+            num_workers=kwargs.get("num_workers", 0),
+            collate_fn=collate_fn,
+        )
+        model.init_center(center_loader)
+        print(f"Fold {fold + 1}: centre initialised from {len(normal_train_idx)} normal graphs.")
+
         for epoch in range(num_epochs):
             model.train()
             print(f"Fold {fold + 1}/{k_folds}, epoch {epoch + 1}/{num_epochs} — training...")
             train_loss = 0.0
             for data in train_loader:
                 data = data.to(device)
-                output = model(data, data.aggregated_features)
-                loss = criterion(output, data.y)
+                z = model(data, data.aggregated_features)
+                loss = deep_sad_loss(z, model.center, data.y, eta=eta, eps=eps)
                 loss.backward()
                 optimizer.step()
                 optimizer.zero_grad()
@@ -596,38 +627,60 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
             #print(f"Fold {fold + 1}/{k_folds}, epoch {epoch + 1}/{num_epochs} — validation...")
             with torch.no_grad():
                 all_labels = []
-                all_preds = []
-                all_val_probs = []
+                all_scores = []
                 for data in val_loader:
                     data = data.to(device)
-                    output = model(data, data.aggregated_features)
-                    loss = criterion(output, data.y)
+                    z = model(data, data.aggregated_features)
+                    loss = deep_sad_loss(z, model.center, data.y, eta=eta, eps=eps)
                     val_loss += loss.item()
-                    probs = torch.softmax(output, dim=1)
                     all_labels.extend(data.y.detach().cpu().tolist())
-                    all_preds.extend(output.argmax(dim=1).detach().cpu().tolist())
-                    all_val_probs.extend(probs.detach().cpu().tolist())
+                    all_scores.extend(model.score(z).detach().cpu().tolist())
 
                 avg_val_loss = val_loss / len(val_loader)
 
-                all_val_probs_np = np.array(all_val_probs)
+                all_labels = np.array(all_labels)
+                all_scores = np.array(all_scores)
+
+                # The score is a distance, already oriented "higher = more anomalous",
+                # so the ranking metrics consume it directly — no probs[:, 1] column and
+                # no sign flip.
+                val_pr_auc = average_precision_score(all_labels, all_scores)
+                val_roc_auc = roc_auc_score(all_labels, all_scores)
+
+                # A distance has no natural decision boundary, so fit the operating point
+                # on this fold's validation scores. It is handed to EarlyStopping as
+                # `extra` so it stays paired with the weights that produced it.
+                threshold = f2_optimal_threshold(all_labels, all_scores)
+                all_preds = (all_scores > threshold).astype(int)
+
                 val_precision, val_recall, val_f1, _ = precision_recall_fscore_support(
                     all_labels, all_preds, labels=[0, 1], zero_division=0
                 )
-                val_pr_auc = average_precision_score(all_labels, all_val_probs_np[:, 1])
-                val_roc_auc = roc_auc_score(all_labels, all_val_probs_np[:, 1])
                 val_mcc = matthews_corrcoef(all_labels, all_preds)
 
                 # F2-score (anomaly): weighs recall more than precision, but still
-                # collapses towards 0 if precision collapses — used as a tiebreaker
-                # for checkpoint selection when PR-AUC plateaus (see EarlyStopping).
+                # collapses towards 0 if precision collapses — primary metric for
+                # checkpoint selection, with PR-AUC as tiebreaker (see EarlyStopping).
                 val_f2_anomaly = fbeta_score(val_precision[1], val_recall[1])
+
+                # Hypersphere-collapse diagnostic. If the normal and anomaly distances
+                # both trend to 0 together, the network has found phi == c and every
+                # graph is being scored as perfectly normal.
+                normal_dist = all_scores[all_labels == 0]
+                anomaly_dist = all_scores[all_labels == 1]
+                collapse_report = (
+                    f"dist(normal) {normal_dist.mean():.4e}+-{normal_dist.std():.4e}"
+                    if normal_dist.size else "dist(normal) n/a"
+                )
+                if anomaly_dist.size:
+                    collapse_report += f" | dist(anomaly) {anomaly_dist.mean():.4e}+-{anomaly_dist.std():.4e}"
 
                 print(
                     f"  Fold {fold + 1}, epoch {epoch + 1}, train loss: {avg_train_loss:.4f}, "
                     f"val loss: {avg_val_loss:.4f}, PR-AUC (anomaly): {val_pr_auc:.4f}, "
-                    f"f2-score (anomaly): {val_f2_anomaly:.4f}"
+                    f"f2-score (anomaly): {val_f2_anomaly:.4f}, tau: {threshold:.4e}"
                 )
+                print(f"  {collapse_report}")
                 print(classification_report(all_labels, all_preds, zero_division=0))
 
                 reporter.record_val_epoch(fold, epoch, {
@@ -644,19 +697,28 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
                     "mcc": val_mcc,
                     "roc_auc": val_roc_auc,
                     "pr_auc": val_pr_auc,
+                    "threshold": threshold,
+                    "dist_normal_mean": float(normal_dist.mean()) if normal_dist.size else float("nan"),
+                    "dist_anomaly_mean": float(anomaly_dist.mean()) if anomaly_dist.size else float("nan"),
                 })
 
-                early_stopping(val_f2_anomaly, val_pr_auc, model)
+                early_stopping(val_f2_anomaly, val_pr_auc, model, extra={"threshold": threshold})
                 if kwargs.get("early_stopping", None) is not None and early_stopping.early_stop:
                     print(f"Early stopping triggered at epoch {epoch + 1} for fold {fold + 1}.")
                     break
 
         if early_stopping.best_model_state is not None:
-            fold_model_states.append((fold, early_stopping.best_model_state))
+            # The threshold was fitted on the same epoch's validation scores as the
+            # selected weights — see EarlyStopping.best_extra.
+            best_threshold = (early_stopping.best_extra or {}).get("threshold")
+            fold_model_states.append((fold, early_stopping.best_model_state, best_threshold))
 
             checkpoint = {
                 "fold": fold,
                 "model_state_dict": early_stopping.best_model_state,
+                "threshold": best_threshold,
+                "eta": eta,
+                "deep_sad_eps": eps,
                 "model_kwargs": model_kwargs,
                 "metapaths": metapaths,
                 "metapath_feature_sizes": all_feature_sizes,
@@ -689,6 +751,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         ("roc_auc",           "ROC-AUC"),
         ("pr_auc",            "PR-AUC"),
         ("mcc",               "MCC"),
+        ("threshold",         "Decision threshold"),
     ]
 
     if not X_test:
@@ -706,7 +769,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         label_names = ["normal", "anomaly"]
         fold_metrics = []
 
-        for fold_idx, model_state in fold_model_states:
+        for fold_idx, model_state, fold_threshold in fold_model_states:
             fold_model = BridgeDefender(
                 metapath_feature_sizes=all_feature_sizes,
                 node_types=dataset[0].node_types,
@@ -717,28 +780,29 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
 
             test_loss = 0
             all_labels = []
-            all_probs = []
+            all_scores = []
             with torch.no_grad():
                 for data in test_loader:
                     data = data.to(device)
-                    output = fold_model(data, data.aggregated_features)
-                    loss = criterion(output, data.y)
+                    z = fold_model(data, data.aggregated_features)
+                    loss = deep_sad_loss(z, fold_model.center, data.y, eta=eta, eps=eps)
                     test_loss += loss.item()
-                    probs = torch.softmax(output, dim=1)
                     all_labels.extend(data.y.detach().cpu().tolist())
-                    all_probs.extend(probs.detach().cpu().tolist())
+                    all_scores.extend(fold_model.score(z).detach().cpu().tolist())
 
             all_labels = np.array(all_labels)
-            all_probs = np.array(all_probs)
-            all_preds = all_probs.argmax(axis=1)
+            all_scores = np.array(all_scores)
+            # Apply the threshold carried by the checkpoint. Refitting it here would tune
+            # the operating point on the held-out set and inflate every threshold metric.
+            all_preds = (all_scores > fold_threshold).astype(int)
 
             precision, recall, f1, _ = precision_recall_fscore_support(
                 all_labels, all_preds, labels=[0, 1], zero_division=0
             )
             acc = accuracy_score(all_labels, all_preds)
             mcc = matthews_corrcoef(all_labels, all_preds)
-            roc_auc = roc_auc_score(all_labels, all_probs[:, 1])
-            pr_auc = average_precision_score(all_labels, all_probs[:, 1])
+            roc_auc = roc_auc_score(all_labels, all_scores)
+            pr_auc = average_precision_score(all_labels, all_scores)
             f2_anomaly = fbeta_score(precision[1], recall[1])
             avg_test_loss = test_loss / len(test_loader)
 
@@ -755,6 +819,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
                 "mcc": mcc,
                 "roc_auc": roc_auc,
                 "pr_auc": pr_auc,
+                "threshold": fold_threshold,
             })
             reporter.record_test_fold(fold_idx, fold_metrics[-1])
 

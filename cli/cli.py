@@ -46,9 +46,13 @@ class Cli:
             "rm_semantic_fusion": args.rm_semantic_fusion,
             "learning_rate": args.learning_rate,
             "dme_threshold": args.dme_threshold,
+            "rep_dim": args.rep_dim,
+            "eta": args.eta,
+            "weight_decay": args.weight_decay,
         }
 
         kwargs = {
+            "ae_pretrain": args.ae_pretrain,
             "gpu": args.device,
             "k_folds": args.kfolds,
             "num_epochs": args.num_epochs,
@@ -111,6 +115,10 @@ class Cli:
             ("early_stopping",      None,  "es"),
             ("random_seed",         42,    "seed"),
             ("test_split",          0.15,  "ts"),
+            ("rep_dim",             64,    "rd"),
+            ("eta",                 1.0,   "eta"),
+            ("weight_decay",        1e-6,  "wd"),
+            ("ae_pretrain",         False, "ae"),
         ]
         for attr, default, short in non_default_params:
             value = getattr(args, attr)
@@ -242,6 +250,35 @@ class Cli:
             type=float,
             default=0.01,
             help="Learning rate for the optimizer (default: 0.01)",
+        )
+        training_parser.add_argument(
+            "--rep-dim",
+            type=int,
+            default=64,
+            help="Dimensionality of the Deep SAD latent space, i.e. the space the "
+                 "hypersphere lives in (default: 64). Detection performance tends to "
+                 "improve with larger values before plateauing.",
+        )
+        training_parser.add_argument(
+            "--eta",
+            type=float,
+            default=1.0,
+            help="Deep SAD balance between the labeled-anomaly term and the normal term "
+                 "(default: 1.0). Values above 1 emphasise known anomalies; 0 removes "
+                 "them entirely, degenerating to unsupervised Deep SVDD.",
+        )
+        training_parser.add_argument(
+            "--weight-decay",
+            type=float,
+            default=1e-6,
+            help="L2 weight decay (default: 1e-6). Deep SAD is sensitive to this, since "
+                 "shrinking the weights also shrinks the hypersphere.",
+        )
+        training_parser.add_argument(
+            "--ae-pretrain",
+            action="store_true",
+            help="Initialise the encoder from an autoencoder before Deep SAD training. "
+                 "Not implemented yet — passing this raises NotImplementedError.",
         )
         training_parser.add_argument(
             "--device",
