@@ -48,6 +48,8 @@ class Cli:
             "dme_threshold": args.dme_threshold,
             "rep_dim": args.rep_dim,
             "eta": args.eta,
+            "deep_sad_eps": args.deep_sad_eps,
+            "grad_clip": args.grad_clip,
             "weight_decay": args.weight_decay,
         }
 
@@ -117,6 +119,8 @@ class Cli:
             ("test_split",          0.15,  "ts"),
             ("rep_dim",             64,    "rd"),
             ("eta",                 1.0,   "eta"),
+            ("deep_sad_eps",        1.0,   "eps"),
+            ("grad_clip",           1.0,   "gc"),
             ("weight_decay",        1e-6,  "wd"),
             ("ae_pretrain",         False, "ae"),
         ]
@@ -266,6 +270,21 @@ class Cli:
             help="Deep SAD balance between the labeled-anomaly term and the normal term "
                  "(default: 1.0). Values above 1 emphasise known anomalies; 0 removes "
                  "them entirely, degenerating to unsupervised Deep SVDD.",
+        )
+        training_parser.add_argument(
+            "--deep-sad-eps",
+            type=float,
+            default=1.0,
+            help="Denominator offset of the Deep SAD inverse anomaly term (default: 1.0). "
+                 "Bounds that term at eta/eps and its gradient at eta/eps^2. Values near "
+                 "the paper's 1e-6 leave it effectively unbounded and destabilise training.",
+        )
+        training_parser.add_argument(
+            "--grad-clip",
+            type=float,
+            default=1.0,
+            help="Max gradient norm, applied before each optimizer step (default: 1.0). "
+                 "Set to 0 to disable.",
         )
         training_parser.add_argument(
             "--weight-decay",

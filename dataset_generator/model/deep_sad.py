@@ -2,9 +2,11 @@ import numpy as np
 import torch
 from sklearn.metrics import precision_recall_curve
 
-# Machine epsilon added to the denominator of the inverse term for numerical
-# stability (see footnote 1 of the paper).
-DEFAULT_EPS = 1e-6
+# Denominator offset of the inverse anomaly term. Deliberately larger than the paper's
+# 1e-6 numerical guard (footnote 1): at that magnitude an anomaly near the centre yields
+# a ~1e12 gradient that destroys the head. Order 1 bounds the term at eta/eps and its
+# gradient at eta/eps^2, changing the loss shape rather than just its conditioning.
+DEFAULT_EPS = 1.0
 
 
 def deep_sad_loss(
@@ -88,6 +90,18 @@ def f2_optimal_threshold(labels, scores, beta: float = 2.0) -> float:
 
     if fbeta.size == 0:
         return float(scores.max()) + 1.0
+
+    # Reject degenerate operating points. F2 rates the trivial "all anomaly" classifier
+    # at 5p/(4p+1) — 0.556 at a 20% base rate — which beats many useful thresholds and
+    # leaves model selection unable to tell a working model from a dead one. A threshold
+    # is admissible only if its precision beats the base rate; if none does, predict
+    # all-normal so the F2 reaching EarlyStopping is 0 rather than a flattering 0.556.
+    base_rate = float((labels == 1).mean())
+    admissible = precision > base_rate + 1e-12
+    if not admissible.any():
+        return float(scores.max()) + 1.0
+
+    fbeta = np.where(admissible, fbeta, -1.0)
 
     # Nudge just below the chosen threshold so the `>` comparison used at predict
     # time reproduces the `>=` semantics of precision_recall_curve.

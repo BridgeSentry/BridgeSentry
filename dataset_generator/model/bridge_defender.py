@@ -8,13 +8,9 @@ from dataset_generator.model.deep_sad import anomaly_scores
 from dataset_generator.model.sehgnn_conv import SeHGNN
 from dataset_generator.types import EdgeMetapath
 
-# Bounded activations let the network saturate onto the centre, which is one of the
-# two routes to a hypersphere collapse (the other being bias terms).
-UNBOUNDED_ACTIVATIONS = {
-    "relu": nn.ReLU,
-    "leaky_relu": lambda: nn.LeakyReLU(0.1),
-    "prelu": nn.PReLU,
-}
+# Fixed by the objective, not a hyperparameter: the head is bias-free, so a plain ReLU
+# that gets driven negative outputs 0 forever and its gradient dies with it.
+HEAD_NEGATIVE_SLOPE = 0.1
 
 
 class BridgeDefender(nn.Module):
@@ -68,19 +64,11 @@ class BridgeDefender(nn.Module):
         # After obtaining type-level embeddings, we concatenate them and project into the
         # rep_dim latent space where the Deep SAD hypersphere is coded.
         # According to the paper, the activation function for the final layer should be unbounded.
-        if act not in UNBOUNDED_ACTIVATIONS:
-            raise ValueError(
-                f"Activation '{act}' is not supported by the Deep SAD head. "
-                f"Bounded activations permit a hypersphere collapse; choose one of "
-                f"{sorted(UNBOUNDED_ACTIVATIONS)}."
-            )
-        activation = UNBOUNDED_ACTIVATIONS[act]
-
         head_layers: list[nn.Module] = []
         in_dim = non_null_node_types * hidden_channels
         for _ in range(max(n_mlp_layers - 1, 0)):
             head_layers.append(nn.Linear(in_dim, hidden_channels, bias=False))
-            head_layers.append(activation())
+            head_layers.append(nn.LeakyReLU(HEAD_NEGATIVE_SLOPE))
             head_layers.append(nn.Dropout(dropout))
             in_dim = hidden_channels
         head_layers.append(nn.Linear(in_dim, rep_dim, bias=False))

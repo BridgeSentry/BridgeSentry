@@ -543,6 +543,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
     # degenerating to unsupervised Deep SVDD (useful as an ablation baseline).
     eta = model_args.get("eta", 1.0)
     eps = model_args.get("deep_sad_eps", DEFAULT_EPS)
+    grad_clip = model_args.get("grad_clip", 1.0)
 
     def collate_fn(batch: list[HeteroData]) -> Batch:
         pyg_batch = Batch.from_data_list(batch)
@@ -617,6 +618,10 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
                 z = model(data, data.aggregated_features)
                 loss = deep_sad_loss(z, model.center, data.y, eta=eta, eps=eps)
                 loss.backward()
+                if grad_clip > 0:
+                    # The inverse anomaly term still spikes when a labeled anomaly lands
+                    # close to the centre; clipping keeps one such batch from wrecking the head.
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                 optimizer.step()
                 optimizer.zero_grad()
                 train_loss += loss.item()
