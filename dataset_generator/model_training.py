@@ -405,13 +405,12 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         X_train_val, y_train_val = X, y
         X_test = []
 
-    # Record how many REAL graphs are in the pool before appending synthetics.
+    # Record how many REAL graphs are in the pool before appending synthetic cases.
     # StratifiedKFold will split only the first n_real_train_val entries; synthetic graphs
     # are appended after that boundary and routed to folds by source-graph membership.
     n_real_train_val = len(X_train_val)
 
-    # Append all synthetic graphs to the combined pool (they will never enter the val fold —
-    # see the fold loop below for how this is enforced).
+    # Append all synthetic graphs to the combined pool (they will never enter the val fold).
     if synthetic_graphs:
         X_train_val = X_train_val + synthetic_graphs
         y_train_val = y_train_val + [int(g.y.item()) for g in synthetic_graphs]

@@ -64,8 +64,13 @@ class BridgeDefender(nn.Module):
         # After obtaining type-level embeddings, we concatenate them and project into the
         # rep_dim latent space where the Deep SAD hypersphere is coded.
         # According to the paper, the activation function for the final layer should be unbounded.
+        # "mean_max" concatenates two pooling statistics per node type instead of one,
+        # so it doubles the width each node type contributes to the head's input.
+        pool_multiplier = 2 if pooling == "mean_max" else 1
+        self.pool_out_dim = hidden_channels * pool_multiplier
+
         head_layers: list[nn.Module] = []
-        in_dim = non_null_node_types * hidden_channels
+        in_dim = non_null_node_types * self.pool_out_dim
         for _ in range(max(n_mlp_layers - 1, 0)):
             head_layers.append(nn.Linear(in_dim, hidden_channels, bias=False))
             head_layers.append(nn.LeakyReLU(HEAD_NEGATIVE_SLOPE))
@@ -103,7 +108,7 @@ class BridgeDefender(nn.Module):
                 # still append a zero embedding so concatenation stays consistent.
                 device = next(self.parameters()).device
                 dtype = next(self.parameters()).dtype
-                type_embeddings.append(torch.zeros((batch_size, self.hidden_channels), device=device, dtype=dtype))
+                type_embeddings.append(torch.zeros((batch_size, self.pool_out_dim), device=device, dtype=dtype))
                 continue
 
             # pooling per node type
@@ -114,6 +119,10 @@ class BridgeDefender(nn.Module):
                 pooled = global_max_pool(x, data[node_type].batch)
             elif pooling == "sum":
                 pooled = global_add_pool(x, data[node_type].batch)
+            elif pooling == "mean_max":
+                mean_pooled = global_mean_pool(x, data[node_type].batch)
+                max_pooled = global_max_pool(x, data[node_type].batch)
+                pooled = torch.cat([mean_pooled, max_pooled], dim=-1)
             elif pooling == "none":
                 pooled = x
             else:

@@ -364,7 +364,7 @@ class Cli:
             "--pooling",
             type=str,
             default="mean",
-            choices=["mean", "max", "sum"],
+            choices=["mean", "max", "sum", "mean_max"],
             help="Pooling method to use for aggregating node embeddings into type-level embeddings (default: mean)",
         )
         training_parser.add_argument(
