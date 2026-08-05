@@ -63,6 +63,7 @@ class Cli:
         train(
             dataset_type=dataset_type,
             dataset_path=dataset_path,
+            tags=args.tags,
             force_reload=force_reload,
             model_args=model_args,
             reports_root=reports_root,
@@ -168,6 +169,12 @@ class Cli:
         training_parser = subparsers.add_parser(
             "train",
             help="Train the BridgeDefender model on a graph dataset",
+        )
+        training_parser.add_argument(
+            "--tags",
+            type=str,
+            default=None,
+            help="Comma-separated tags to include in the training report folder name.",
         )
         training_parser.add_argument(
             "--dataset",
@@ -308,7 +315,7 @@ class Cli:
             "--pooling",
             type=str,
             default="mean",
-            choices=["mean", "max", "sum"],
+            choices=["mean", "max", "sum", "mean_max"],
             help="Pooling method to use for aggregating node embeddings into type-level embeddings (default: mean)",
         )
         training_parser.add_argument(

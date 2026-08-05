@@ -26,6 +26,9 @@ _EDGE_TYPE_SHORT_NAMES = {
     GraphEdgeType.CROSS_CHAIN_RELATION.value: "v",
 }
 
+def _build_tag_prefix(tags: str | None) -> str:
+    tag_list = [tag.strip() for tag in (tags or "").split(",") if tag.strip()]
+    return "_".join(tag_list)
 
 def build_metapath_short_name(metapath) -> str:
     parts = [_NODE_TYPE_SHORT_NAMES[metapath[0][0]]]
@@ -120,6 +123,7 @@ class TrainingReporter:
 
     def __init__(
         self,
+        tags: str,
         reports_root: str,
         name_prefix: str,
         params: dict,
@@ -132,7 +136,8 @@ class TrainingReporter:
     ):
         run_datetime = datetime.now()
         timestamp = run_datetime.strftime("%Y%m%d%H%M")
-        self.run_name = f"{name_prefix}_{timestamp}"
+        tag_prefix = _build_tag_prefix(tags)
+        self.run_name = f"{name_prefix}_{tag_prefix + '_' if tag_prefix else ''}{timestamp}"
         self.run_dir = os.path.join(reports_root, self.run_name)
         self.charts_dir = os.path.join(self.run_dir, "charts")
         self.k_folds = k_folds

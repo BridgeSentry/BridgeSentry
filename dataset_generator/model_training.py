@@ -370,7 +370,7 @@ def apply_normalization(graphs: list[HeteroData], stats: dict[str, torch.Tensor]
                     x[:, AMOUNTS_INDEX] = x[:, AMOUNTS_INDEX] / (max_amounts[0] + 1e-12)
 
 
-def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, model_args: dict, reports_root: str, **kwargs):
+def train(dataset_type: DATASET_TYPE, dataset_path: str, tags: str, force_reload: bool, model_args: dict, reports_root: str, **kwargs):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     device = device if kwargs.get("gpu", "cuda") == "cuda" else "cpu"
     print("Early stopping:", kwargs.get("early_stopping", False))
@@ -522,6 +522,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
     kfold = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=42)
 
     reporter = TrainingReporter(
+        tags=tags,
         reports_root=reports_root,
         name_prefix=kwargs.get("run_name_prefix", "train"),
         params={**model_args, **{k: v for k, v in kwargs.items() if k != "run_name_prefix"}},
