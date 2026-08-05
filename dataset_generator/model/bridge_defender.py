@@ -30,6 +30,8 @@ class BridgeDefender(nn.Module):
         self.convs = nn.ModuleDict({})
         self.pooling = pooling
         self.hidden_channels = hidden_channels
+        # mean_max pooling concatenates mean- and max-pooled embeddings, doubling the per-type width.
+        self.type_emb_channels = hidden_channels * 2 if pooling == "mean_max" else hidden_channels
 
         # Use SeHGNNConv to generate node embeddings for each target node type, based on the pre-computed meta-path features.
         non_null_node_types = len(node_types)
@@ -57,7 +59,7 @@ class BridgeDefender(nn.Module):
 
         # After obtaining type-level embeddings, we will concatenate them and pass through an MLP for final classification.
         self.classifier = MLP(
-            in_channels=non_null_node_types * hidden_channels,
+            in_channels=non_null_node_types * self.type_emb_channels,
             hidden_channels=hidden_channels,
             out_channels=out_channels,
             num_layers=n_mlp_layers,
@@ -90,7 +92,7 @@ class BridgeDefender(nn.Module):
                 # still append a zero embedding so concatenation stays consistent.
                 device = next(self.parameters()).device
                 dtype = next(self.parameters()).dtype
-                type_embeddings.append(torch.zeros((batch_size, self.hidden_channels), device=device, dtype=dtype))
+                type_embeddings.append(torch.zeros((batch_size, self.type_emb_channels), device=device, dtype=dtype))
                 continue
 
             # pooling per node type
@@ -99,6 +101,10 @@ class BridgeDefender(nn.Module):
                 pooled = global_mean_pool(x, data[node_type].batch)
             elif pooling == "max":
                 pooled = global_max_pool(x, data[node_type].batch)
+            elif pooling == "mean_max":
+                mean_pooled = global_mean_pool(x, data[node_type].batch)
+                max_pooled = global_max_pool(x, data[node_type].batch)
+                pooled = torch.cat([mean_pooled, max_pooled], dim=-1)
             elif pooling == "sum":
                 pooled = global_add_pool(x, data[node_type].batch)
             elif pooling == "none":
