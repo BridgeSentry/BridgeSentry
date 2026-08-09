@@ -377,7 +377,7 @@ def apply_normalization(graphs: list[HeteroData], stats: dict[str, torch.Tensor]
                 x[:, AMOUNTS_INDEX] = x[:, AMOUNTS_INDEX] / (max_amounts[0] + 1e-12)
 
 
-def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, model_args: dict, reports_root: str, **kwargs):
+def train(tags: str, dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, model_args: dict, reports_root: str, **kwargs):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     device = device if kwargs.get("gpu", "cuda") == "cuda" else "cpu"
     print("Early stopping:", kwargs.get("early_stopping", False))
@@ -535,6 +535,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
         dataset_graphs=real_graphs,
         dme_threshold=dme_threshold,
         reported_metapaths=len(metapaths),
+        tags=tags
     )
     reporter.save_metapath_report(metapaths, metapath_differential_values)
 
@@ -838,3 +839,4 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, mod
             print(f"  {label:<26} {np.mean(values):.4f} ± {np.std(values):.4f}")
 
     reporter.save(metric_display)
+    return reporter.get_run_dir()

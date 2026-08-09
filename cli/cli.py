@@ -66,7 +66,8 @@ class Cli:
             "test_split": args.test_split,
         }
 
-        train(
+        return train(
+            tags=args.tags,
             dataset_type=dataset_type,
             dataset_path=dataset_path,
             force_reload=force_reload,
@@ -180,6 +181,12 @@ class Cli:
         training_parser = subparsers.add_parser(
             "train",
             help="Train the BridgeDefender model on a graph dataset",
+        )
+        training_parser.add_argument(
+            "--tags",
+            type=str,
+            default=None,
+            help="Optional comma-separated tags to append to the training run folder name for identification",
         )
         training_parser.add_argument(
             "--dataset",
