@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import yaml
 
+from dataset_generator.confusion_matrix_report import plot_bridge_confusion_matrices, plot_confusion_matrix
 from repository.db.graph_label import GraphNodeType, GraphEdgeType
 
 _NODE_TYPE_SHORT_NAMES = {
@@ -123,7 +124,6 @@ class TrainingReporter:
 
     def __init__(
         self,
-        tags: str,
         reports_root: str,
         name_prefix: str,
         params: dict,
@@ -133,16 +133,19 @@ class TrainingReporter:
         dataset_graphs: list,
         dme_threshold: float,
         reported_metapaths: int,
+        tags: str | None = None,
     ):
         run_datetime = datetime.now()
         timestamp = run_datetime.strftime("%Y%m%d%H%M")
-        tag_prefix = _build_tag_prefix(tags)
-        self.run_name = f"{name_prefix}_{tag_prefix + '_' if tag_prefix else ''}{timestamp}"
+        tags_prefix = f"{_build_tag_prefix(tags)}_" if tags else ""
+        self.run_name = f"{name_prefix}_{tags_prefix + "_" if tags_prefix else ""}{timestamp}"
         self.run_dir = os.path.join(reports_root, self.run_name)
         self.charts_dir = os.path.join(self.run_dir, "charts")
+        self.confusion_matrix_dir = os.path.join(self.run_dir, "confusion_matrices")
         self.k_folds = k_folds
 
         os.makedirs(self.charts_dir, exist_ok=True)
+        os.makedirs(self.confusion_matrix_dir, exist_ok=True)
 
         run_info = {
             "out_dir": self.run_dir,
@@ -177,6 +180,9 @@ class TrainingReporter:
 
         # fold_durations[fold_idx] = wall-clock seconds spent training that fold
         self.fold_durations: dict[int, float] = {}
+
+    def get_run_dir(self) -> str:
+        return self.run_dir
 
     def record_val_epoch(self, fold: int, epoch: int, metrics: dict) -> None:
         for metric_name in self.VAL_METRICS:
@@ -222,6 +228,18 @@ class TrainingReporter:
             writer = csv.DictWriter(f, fieldnames=["metapath", "difference"])
             writer.writeheader()
             writer.writerows(entries)
+
+    def save_confusion_matrix(self, fold: int, labels: np.ndarray, preds: np.ndarray) -> None:
+        plot_confusion_matrix(self.confusion_matrix_dir, fold, labels, preds)
+
+    def save_bridge_confusion_matrices(
+        self,
+        fold: int,
+        bridges: list[str],
+        labels: np.ndarray,
+        preds: np.ndarray,
+    ) -> None:
+        plot_bridge_confusion_matrices(self.confusion_matrix_dir, fold, bridges, labels, preds)
 
     def flush_charts(self) -> None:
         """Regenerate validation charts from the current in-memory history.

@@ -24,8 +24,8 @@ class EarlyStopping:
             self.best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             self.counter = 0
         elif f2_score >= self.best_f2_score - self.delta and tiebreak_metric > self.best_tiebreak_metric + self.delta:
-            # PR-AUC tied the current best (within delta): prefer the checkpoint
-            # with the higher tiebreak metric among equally-good-by-PR-AUC epochs.
+            # F2 tied the current best (within delta): prefer the checkpoint
+            # with the higher tiebreak metric among equally-good-by-F2 epochs.
             self.best_tiebreak_metric = tiebreak_metric
             self.best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             self.counter += 1  # Don't reset counter here, as this should only be a tiebreaker, not a new best epoch.

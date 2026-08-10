@@ -362,15 +362,16 @@ def apply_normalization(graphs: list[HeteroData], stats: dict[str, torch.Tensor]
                 x[:, IN_DEGREE_INDEX] = x[:, IN_DEGREE_INDEX] / (max_degrees[0] + 1e-12)
                 x[:, OUT_DEGREE_INDEX] = x[:, OUT_DEGREE_INDEX] / (max_degrees[0] + 1e-12)
 
-            if node_type == GraphNodeType.LOG_EVENT.value:
-                if hasattr(graph[node_type], 'x') and graph[node_type].x is not None:
-                    x = graph[node_type].x
-                    x[:, ARGS_NUM_INDEX] = x[:, ARGS_NUM_INDEX] / (max_args_num[0] + 1e-12)
-                    x[:, INPUT_SIZE_INDEX] = x[:, INPUT_SIZE_INDEX] / (max_inputs_size[0] + 1e-12)
-                    x[:, AMOUNTS_INDEX] = x[:, AMOUNTS_INDEX] / (max_amounts[0] + 1e-12)
+            if node_type == GraphNodeType.LOG_EVENT.value \
+                and hasattr(graph[node_type], 'x') \
+                and graph[node_type].x is not None:
+                x = graph[node_type].x
+                x[:, ARGS_NUM_INDEX] = x[:, ARGS_NUM_INDEX] / (max_args_num[0] + 1e-12)
+                x[:, INPUT_SIZE_INDEX] = x[:, INPUT_SIZE_INDEX] / (max_inputs_size[0] + 1e-12)
+                x[:, AMOUNTS_INDEX] = x[:, AMOUNTS_INDEX] / (max_amounts[0] + 1e-12)
 
 
-def train(dataset_type: DATASET_TYPE, dataset_path: str, tags: str, force_reload: bool, model_args: dict, reports_root: str, **kwargs):
+def train(tags: str, dataset_type: DATASET_TYPE, dataset_path: str, force_reload: bool, model_args: dict, reports_root: str, **kwargs):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     device = device if kwargs.get("gpu", "cuda") == "cuda" else "cpu"
     print("Early stopping:", kwargs.get("early_stopping", False))
@@ -398,13 +399,12 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, tags: str, force_reload
         X_train_val, y_train_val = X, y
         X_test = []
 
-    # Record how many REAL graphs are in the pool before appending synthetics.
+    # Record how many REAL graphs are in the pool before appending synthetic cases.
     # StratifiedKFold will split only the first n_real_train_val entries; synthetic graphs
     # are appended after that boundary and routed to folds by source-graph membership.
     n_real_train_val = len(X_train_val)
 
-    # Append all synthetic graphs to the combined pool (they will never enter the val fold —
-    # see the fold loop below for how this is enforced).
+    # Append all synthetic graphs to the combined pool (they will never enter the val fold).
     if synthetic_graphs:
         X_train_val = X_train_val + synthetic_graphs
         y_train_val = y_train_val + [int(g.y.item()) for g in synthetic_graphs]
@@ -456,6 +456,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, tags: str, force_reload
     class_weights = 1.0 / (label_counts + 1e-12)  # Add small value to avoid division by zero
     class_weights = class_weights / class_weights.sum()  # Normalize to sum to 1
     class_weights = class_weights.to(device)
+    print(f"Label distribution in train/val pool: {int(label_counts[0])} normal, {int(label_counts[1])} anomaly.")
 
     # Perform Differential Meta-path Extraction on the training/validation set
     # to identify the most discriminative meta-paths for the classification task
@@ -482,7 +483,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, tags: str, force_reload
 
     expected_node_types = sorted(base_feature_dims.keys())
 
-    all_feature_sizes = dict()
+    all_feature_sizes = {}
     for data in X_train_val:
         data.aggregated_features, feature_sizes = aggregate_metapath_features(
             data,
@@ -502,27 +503,26 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, tags: str, force_reload
 
     # Shared BridgeDefender constructor kwargs, used both for fold training and
     # for reconstructing each fold's model at test-time (and later, in saved checkpoints).
-    model_kwargs = dict(
-        first_layer_channels=model_args.get("first_layer_channels", 128),
-        hidden_channels=model_args.get("hidden_channels", 64),
-        out_channels=model_args.get("out_channels", 2),
-        dropout=model_args.get("dropout", 0.5),
-        input_drop=model_args.get("input_drop", 0.0),
-        att_drop=model_args.get("att_drop", 0.0),
-        n_fp_layers=model_args.get("n_fp_layers", 2),
-        n_mlp_layers=model_args.get("n_mlp_layers", 2),
-        act=model_args.get("act", 'relu'),
-        residual=model_args.get("residual", False),
-        pooling=model_args.get("pooling", 'mean'),
-        rm_semantic_fusion=model_args.get("rm_semantic_fusion", False),
-    )
+    model_kwargs = {
+        'first_layer_channels': model_args.get("first_layer_channels", 128),
+        'hidden_channels': model_args.get("hidden_channels", 64),
+        'out_channels': model_args.get("out_channels", 2),
+        'dropout': model_args.get("dropout", 0.5),
+        'input_drop': model_args.get("input_drop", 0.0),
+        'att_drop': model_args.get("att_drop", 0.0),
+        'n_fp_layers': model_args.get("n_fp_layers", 2),
+        'n_mlp_layers': model_args.get("n_mlp_layers", 2),
+        'act': model_args.get("act", 'relu'),
+        'residual': model_args.get("residual", False),
+        'pooling': model_args.get("pooling", 'mean'),
+        'rm_semantic_fusion': model_args.get("rm_semantic_fusion", False),
+    }
 
     k_folds = kwargs.get("k_folds", 5)
     num_epochs = kwargs.get("num_epochs", 100)
     kfold = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=42)
 
     reporter = TrainingReporter(
-        tags=tags,
         reports_root=reports_root,
         name_prefix=kwargs.get("run_name_prefix", "train"),
         params={**model_args, **{k: v for k, v in kwargs.items() if k != "run_name_prefix"}},
@@ -532,6 +532,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, tags: str, force_reload
         dataset_graphs=real_graphs,
         dme_threshold=dme_threshold,
         reported_metapaths=len(metapaths),
+        tags=tags,
     )
     reporter.save_metapath_report(metapaths, metapath_differential_values)
 
@@ -620,8 +621,8 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, tags: str, force_reload
                 val_mcc = matthews_corrcoef(all_labels, all_preds)
 
                 # F2-score (anomaly): weighs recall more than precision, but still
-                # collapses towards 0 if precision collapses — used as a tiebreaker
-                # for checkpoint selection when PR-AUC plateaus (see EarlyStopping).
+                # collapses towards 0 if precision collapses - primary metric for
+                # for checkpoint selection, with PR-AUC as tiebreaker (see EarlyStopping).
                 val_f2_anomaly = fbeta_score(val_precision[1], val_recall[1])
 
                 print(
@@ -705,6 +706,7 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, tags: str, force_reload
             collate_fn=collate_fn,
         )
         label_names = ["normal", "anomaly"]
+        test_bridges = [getattr(g, "bridge", "unknown") for g in X_test]
         fold_metrics = []
 
         for fold_idx, model_state in fold_model_states:
@@ -758,6 +760,8 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, tags: str, force_reload
                 "pr_auc": pr_auc,
             })
             reporter.record_test_fold(fold_idx, fold_metrics[-1])
+            reporter.save_confusion_matrix(fold_idx + 1, all_labels, all_preds)
+            reporter.save_bridge_confusion_matrices(fold_idx + 1, test_bridges, all_labels, all_preds)
 
             print(f"\n--- Fold {fold_idx + 1} test results ---")
             print(f"Test loss: {avg_test_loss:.4f}")
@@ -770,3 +774,4 @@ def train(dataset_type: DATASET_TYPE, dataset_path: str, tags: str, force_reload
             print(f"  {label:<26} {np.mean(values):.4f} ± {np.std(values):.4f}")
 
     reporter.save(metric_display)
+    return reporter.get_run_dir()

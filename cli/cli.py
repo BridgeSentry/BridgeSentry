@@ -60,10 +60,10 @@ class Cli:
             "test_split": args.test_split,
         }
 
-        train(
+        return train(
+            tags=args.tags,
             dataset_type=dataset_type,
             dataset_path=dataset_path,
-            tags=args.tags,
             force_reload=force_reload,
             model_args=model_args,
             reports_root=reports_root,
@@ -174,7 +174,7 @@ class Cli:
             "--tags",
             type=str,
             default=None,
-            help="Comma-separated tags to include in the training report folder name.",
+            help="Optional comma-separated tags to append to the training run folder name for identification",
         )
         training_parser.add_argument(
             "--dataset",

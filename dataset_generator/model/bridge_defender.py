@@ -31,7 +31,7 @@ class BridgeDefender(nn.Module):
         self.pooling = pooling
         self.hidden_channels = hidden_channels
         # mean_max pooling concatenates mean- and max-pooled embeddings, doubling the per-type width.
-        self.type_emb_channels = hidden_channels * 2 if pooling == "mean_max" else hidden_channels
+        self.pool_out_dim = hidden_channels * 2 if pooling == "mean_max" else hidden_channels
 
         # Use SeHGNNConv to generate node embeddings for each target node type, based on the pre-computed meta-path features.
         non_null_node_types = len(node_types)
@@ -58,8 +58,10 @@ class BridgeDefender(nn.Module):
             # type-level embedding.
 
         # After obtaining type-level embeddings, we will concatenate them and pass through an MLP for final classification.
+        # "mean_max" concatenates two pooling statistics per node type instead of one,
+        # so it doubles the width each node type contributes to the head's input.
         self.classifier = MLP(
-            in_channels=non_null_node_types * self.type_emb_channels,
+            in_channels=non_null_node_types * self.pool_out_dim,
             hidden_channels=hidden_channels,
             out_channels=out_channels,
             num_layers=n_mlp_layers,
@@ -92,7 +94,7 @@ class BridgeDefender(nn.Module):
                 # still append a zero embedding so concatenation stays consistent.
                 device = next(self.parameters()).device
                 dtype = next(self.parameters()).dtype
-                type_embeddings.append(torch.zeros((batch_size, self.type_emb_channels), device=device, dtype=dtype))
+                type_embeddings.append(torch.zeros((batch_size, self.pool_out_dim), device=device, dtype=dtype))
                 continue
 
             # pooling per node type
@@ -127,7 +129,7 @@ class BridgeDefender(nn.Module):
         if len(type_embeddings) == 0:
             return torch.empty(0)
 
-        # concatenate type-level embeddings and optionally pass through an MLP
+        # concatenate type-level embeddings and pass through an MLP
         type_level = torch.cat(type_embeddings, dim=-1)
 
         x = self.classifier(type_level)

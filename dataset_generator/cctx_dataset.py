@@ -67,6 +67,8 @@ class CrossChainTransactionsDataset(InMemoryDataset):
                 for row in reader:
                     self._data_index.append({
                         'cctx_graph_id': row['cctx_graph_id'],
+                        'tx_hash': row['tx_hash'],
+                        'bridge': row['bridge'],
                         'file_name': row['file_name'],
                         'offset': int(row['offset']),
                     })
@@ -137,7 +139,7 @@ class CrossChainTransactionsDataset(InMemoryDataset):
         index_path = os.path.join(self.processed_dir, 'data_index.csv')
         index_file = open(index_path, 'w')
         writer = csv.writer(index_file)
-        writer.writerow(['index', 'cctx_graph_id', 'file_name', 'offset'])
+        writer.writerow(['index', 'cctx_graph_id', 'tx_hash', 'bridge', 'file_name', 'offset'])
 
         # We want to save up to 50 graphs in each file, so that:
         # a) We don't have a huge file that takes a long time to load / generate, and
@@ -171,7 +173,7 @@ class CrossChainTransactionsDataset(InMemoryDataset):
 
             # Save the graph position in the index file
             data_list.append(graph_data)
-            writer.writerow([index, cctx_graph_id, graph_file_name, offset])
+            writer.writerow([index, cctx_graph_id, graph_data.tx_hash, graph_data.bridge, graph_file_name, offset])
             offset += 1
 
             # Add the new node and edge types to the sets
