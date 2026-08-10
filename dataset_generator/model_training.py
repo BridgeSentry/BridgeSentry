@@ -772,6 +772,7 @@ def train(tags: str, dataset_type: DATASET_TYPE, dataset_path: str, force_reload
             collate_fn=collate_fn,
         )
         label_names = ["normal", "anomaly"]
+        test_bridges = [getattr(g, "bridge", "unknown") for g in X_test]
         fold_metrics = []
 
         for fold_idx, model_state, fold_threshold in fold_model_states:
@@ -827,6 +828,8 @@ def train(tags: str, dataset_type: DATASET_TYPE, dataset_path: str, force_reload
                 "threshold": fold_threshold,
             })
             reporter.record_test_fold(fold_idx, fold_metrics[-1])
+            reporter.save_confusion_matrix(fold_idx + 1, all_labels, all_preds)
+            reporter.save_bridge_confusion_matrices(fold_idx + 1, test_bridges, all_labels, all_preds)
 
             print(f"\n--- Fold {fold_idx + 1} test results ---")
             print(f"Test loss: {avg_test_loss:.4f}")
