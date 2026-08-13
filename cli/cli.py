@@ -10,6 +10,7 @@ from utils.utils import get_enum_instance
 
 from dataset_generator.model_training import train
 from dataset_generator.model_evaluation import evaluate
+from dataset_generator.inference_timing import measure_inference_time
 
 class Cli:
     CLASS_NAME = "Cli"
@@ -83,6 +84,20 @@ class Cli:
             tags=args.tags,
             device=args.device,
             batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            force_reload=args.force_reload,
+        )
+
+    def time_inference(args):
+        measure_inference_time(
+            load_data=args.load_data,
+            checkpoint_dir=args.checkpoint_data,
+            fold=args.fold,
+            tags=args.tags,
+            device=args.device,
+            warmup_batches=args.warmup_batches,
+            repeats=args.repeats,
+            batch_sizes=[int(b.strip()) for b in args.batch_sizes.split(",") if b.strip()],
             num_workers=args.num_workers,
             force_reload=args.force_reload,
         )
@@ -441,6 +456,74 @@ class Cli:
             help="Force reload the graph dataset even if it already exists (default: False)",
         )
         eval_parser.set_defaults(func=Cli.evaluate_model)
+
+        timing_parser = subparsers.add_parser(
+            "time-infer",
+            help="Measure per-transaction inference time (preprocessing + forward pass) of a saved fold checkpoint",
+        )
+        timing_parser.add_argument(
+            "--load-data",
+            type=str,
+            required=True,
+            help="The directory where the graph dataset to time is located.",
+        )
+        timing_parser.add_argument(
+            "--checkpoint-data",
+            type=str,
+            required=True,
+            help="The directory containing the fold checkpoints to time (a training run's 'models/' folder).",
+        )
+        timing_parser.add_argument(
+            "--fold",
+            type=int,
+            default=1,
+            help="Which fold checkpoint (1-indexed) to load and time; all folds share the same "
+                 "architecture so timing one is representative (default: 1)",
+        )
+        timing_parser.add_argument(
+            "--device",
+            type=str,
+            choices=["cpu", "cuda"],
+            default="cuda" if torch.cuda.is_available() else "cpu",
+            help="Device to use for timing (default: 'cuda' if available, otherwise 'cpu')",
+        )
+        timing_parser.add_argument(
+            "--tags",
+            type=str,
+            default=None,
+            help="Comma-separated tags to include in the timing report folder name.",
+        )
+        timing_parser.add_argument(
+            "--batch-sizes",
+            type=str,
+            default="1,32",
+            help="Comma-separated batch sizes to time the forward pass at (default: '1,32')",
+        )
+        timing_parser.add_argument(
+            "--warmup-batches",
+            type=int,
+            default=3,
+            help="Number of batches to run un-timed before recording, per batch size (default: 3)",
+        )
+        timing_parser.add_argument(
+            "--repeats",
+            type=int,
+            default=3,
+            help="Number of times to loop the dataset before timing, so small test sets still yield "
+                 "enough post-warmup batches at larger batch sizes (default: 3)",
+        )
+        timing_parser.add_argument(
+            "--num-workers",
+            type=int,
+            default=0,
+            help="Number of worker processes for data loading (default: 0, i.e., no multiprocessing)",
+        )
+        timing_parser.add_argument(
+            "-f", "--force-reload",
+            action="store_true",
+            help="Force reload the graph dataset even if it already exists (default: False)",
+        )
+        timing_parser.set_defaults(func=Cli.time_inference)
 
         args = parser.parse_args()
         if args.action:
