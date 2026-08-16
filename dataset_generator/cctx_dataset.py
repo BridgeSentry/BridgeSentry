@@ -6,6 +6,8 @@ import pandas as pd
 import torch
 import csv
 import os
+import time
+import statistics
 from torch_geometric.data import InMemoryDataset, HeteroData
 from tqdm import tqdm
 
@@ -135,6 +137,14 @@ class CrossChainTransactionsDataset(InMemoryDataset):
         
         feature_extractor = FeatureExtractor(nodes_df, edges_df)
 
+        # Group nodes/edges by cctx_graph_id once up front so that looking up a
+        # given graph's rows inside the loop below is an O(1) dict lookup instead
+        # of an O(len(nodes_df)) / O(len(edges_df)) full-table scan per graph.
+        nodes_by_graph = dict(tuple(nodes_df.groupby('cctx_graph_id', sort=False)))
+        edges_by_graph = dict(tuple(edges_df.groupby('cctx_graph_id', sort=False)))
+        empty_nodes = nodes_df.iloc[0:0]
+        empty_edges = edges_df.iloc[0:0]
+
         # Also create an index file to keep track of processed graphs
         index_path = os.path.join(self.processed_dir, 'data_index.csv')
         index_file = open(index_path, 'w')
@@ -155,21 +165,25 @@ class CrossChainTransactionsDataset(InMemoryDataset):
         pbar.set_description("Processing graphs dataset")
 
         data_list = []
-        for index, row in cctx_df.iterrows():
-            cctx_graph_id = row['cctx_graph_id']
+        processing_times = []
+        for row in cctx_df.itertuples(index=True):
+            index = row.Index
+            cctx_graph_id = row.cctx_graph_id
 
-            nodes = nodes_df[nodes_df['cctx_graph_id'] == cctx_graph_id]
-            edges = edges_df[edges_df['cctx_graph_id'] == cctx_graph_id]
-            label = row['label']
+            nodes = nodes_by_graph.get(cctx_graph_id, empty_nodes)
+            edges = edges_by_graph.get(cctx_graph_id, empty_edges)
+            label = row.label
 
             # Process and save the graph data
+            graph_start_time = time.perf_counter()
             graph_data = self.process_heterogeneous_graph(nodes, edges, label, feature_extractor)
-            graph_data.bridge = row['bridge']
-            graph_data.tx_hash = str(row['cctx_id'])
+            graph_data.bridge = row.bridge
+            graph_data.tx_hash = str(row.cctx_id)
             if self.pre_filter is not None and not self.pre_filter(graph_data):
                 continue
             if self.pre_transform is not None:
                 graph_data = self.pre_transform(graph_data)
+            processing_times.append(time.perf_counter() - graph_start_time)
 
             # Save the graph position in the index file
             data_list.append(graph_data)
@@ -198,9 +212,19 @@ class CrossChainTransactionsDataset(InMemoryDataset):
         pbar.close()
         index_file.close()
 
+        # Efficiency eval:
         # Create a metadata file to store the unique node and edge types found in the dataset
         with open(os.path.join(self.processed_dir, 'metadata.json'), 'w') as f:
             json.dump([list(node_types), list(edge_types)], f)
+
+        # Save per-graph processing time statistics
+        total_time = sum(processing_times)
+        average_per_graph = statistics.mean(processing_times) if processing_times else 0.0
+        var_per_graph = statistics.variance(processing_times) if len(processing_times) > 1 else 0.0
+        with open(os.path.join(self.processed_dir, 'processing_time.csv'), 'w') as f:
+            writer = csv.writer(f)
+            writer.writerow(['total_time', 'average_per_graph', 'var_per_graph'])
+            writer.writerow([total_time, average_per_graph, var_per_graph])
 
     def process_heterogeneous_graph(self, nodes: pd.DataFrame, edges: pd.DataFrame, label, feature_extractor) -> HeteroData:
         graph_data = HeteroData()

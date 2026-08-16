@@ -6,6 +6,8 @@ import pandas as pd
 import torch
 import csv
 import os
+import time
+import statistics
 from torch_geometric.data import InMemoryDataset, HeteroData
 from tqdm import tqdm
 
@@ -180,6 +182,7 @@ class SingleTransactionsDataset(InMemoryDataset):
 
         # First process single-chain graphs
         data_list = []
+        processing_times = []
         for index, row in blockchain_df.iterrows():
             blockchain_graph_id = row['graph_id']
 
@@ -188,6 +191,7 @@ class SingleTransactionsDataset(InMemoryDataset):
             label = row['label']
 
             # Process and save the graph data
+            graph_start_time = time.perf_counter()
             graph_data = self.process_heterogeneous_graph(nodes, edges, label, feature_extractor)
             graph_data.bridge = row['bridge']  # Add a custom attribute to indicate the bridge (not used in model)
             graph_data.tx_hash = row['tx_hash']  # Add a custom attribute to keep track of the transaction hash (not used in model)
@@ -195,6 +199,7 @@ class SingleTransactionsDataset(InMemoryDataset):
                 continue
             if self.pre_transform is not None:
                 graph_data = self.pre_transform(graph_data)
+            processing_times.append(time.perf_counter() - graph_start_time)
 
             # Save the graph position in the index file
             data_list.append(graph_data)
@@ -227,6 +232,15 @@ class SingleTransactionsDataset(InMemoryDataset):
         # Create a metadata file to store the unique node and edge types found in the dataset
         with open(os.path.join(self.processed_dir, 'metadata.json'), 'w') as f:
             json.dump([list(node_types), list(edge_types)], f)
+
+        # Save per-graph processing time statistics
+        total_time = sum(processing_times)
+        average_per_graph = statistics.mean(processing_times) if processing_times else 0.0
+        var_per_graph = statistics.variance(processing_times) if len(processing_times) > 1 else 0.0
+        with open(os.path.join(self.processed_dir, 'processing_time.csv'), 'w') as f:
+            writer = csv.writer(f)
+            writer.writerow(['total_time', 'average_per_graph', 'var_per_graph'])
+            writer.writerow([total_time, average_per_graph, var_per_graph])
 
     def process_heterogeneous_graph(self, nodes: pd.DataFrame, edges: pd.DataFrame, label, feature_extractor) -> HeteroData:
         graph_data = HeteroData()
