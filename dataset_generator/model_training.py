@@ -632,7 +632,7 @@ def train(tags: str, dataset_type: DATASET_TYPE, dataset_path: str, force_reload
                 )
                 print(classification_report(all_labels, all_preds, zero_division=0))
 
-                reporter.record_val_epoch(fold, epoch, {
+                epoch_metrics = {
                     "train_loss": avg_train_loss,
                     "val_loss": avg_val_loss,
                     "accuracy": accuracy_score(all_labels, all_preds),
@@ -646,15 +646,37 @@ def train(tags: str, dataset_type: DATASET_TYPE, dataset_path: str, force_reload
                     "mcc": val_mcc,
                     "roc_auc": val_roc_auc,
                     "pr_auc": val_pr_auc,
-                })
+                }
+                reporter.record_val_epoch(fold, epoch, epoch_metrics)
 
-                early_stopping(val_f2_anomaly, val_pr_auc, model)
+                early_stopping(
+                    val_f2_anomaly, val_pr_auc, model,
+                    extra={"epoch": epoch, **epoch_metrics},
+                )
                 if kwargs.get("early_stopping", None) is not None and early_stopping.early_stop:
                     print(f"Early stopping triggered at epoch {epoch + 1} for fold {fold + 1}.")
                     break
 
         if early_stopping.best_model_state is not None:
             fold_model_states.append((fold, early_stopping.best_model_state))
+
+            best_extra = early_stopping.best_extra or {}
+            best_epoch = best_extra.get("epoch")
+            if best_epoch is not None:
+                reporter.record_val_best_fold(fold, best_epoch, {
+                    "val_loss": best_extra.get("val_loss"),
+                    "accuracy": best_extra.get("accuracy"),
+                    "precision_normal": best_extra.get("precision_normal"),
+                    "recall_normal": best_extra.get("recall_normal"),
+                    "f1_normal": best_extra.get("f1_normal"),
+                    "precision_anomaly": best_extra.get("precision_anomaly"),
+                    "recall_anomaly": best_extra.get("recall_anomaly"),
+                    "f1_anomaly": best_extra.get("f1_anomaly"),
+                    "f2_anomaly": best_extra.get("f2_anomaly"),
+                    "roc_auc": best_extra.get("roc_auc"),
+                    "pr_auc": best_extra.get("pr_auc"),
+                    "mcc": best_extra.get("mcc"),
+                })
 
             checkpoint = {
                 "fold": fold,
