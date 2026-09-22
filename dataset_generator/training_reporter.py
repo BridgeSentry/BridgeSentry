@@ -129,6 +129,26 @@ class TrainingReporter:
         "threshold",
     ]
 
+    # Validation metrics at the epoch each fold's early stopping selected as
+    # best (matches keys in record_val_best_fold, plus "epoch").
+    VAL_BEST_METRIC_COLUMNS = [
+        "fold",
+        "epoch",
+        "val_loss",
+        "accuracy",
+        "precision_normal",
+        "recall_normal",
+        "f1_normal",
+        "precision_anomaly",
+        "recall_anomaly",
+        "f1_anomaly",
+        "f2_anomaly",
+        "roc_auc",
+        "pr_auc",
+        "mcc",
+        "threshold",
+    ]
+
     def __init__(
         self,
         reports_root: str,
@@ -185,6 +205,9 @@ class TrainingReporter:
         # One dict per fold, same keys as TEST_METRIC_COLUMNS (minus "fold")
         self.test_metrics: list[dict] = []
 
+        # One dict per fold, same keys as VAL_BEST_METRIC_COLUMNS (minus "fold"/"epoch")
+        self.val_best_metrics: list[dict] = []
+
         # fold_durations[fold_idx] = wall-clock seconds spent training that fold
         self.fold_durations: dict[int, float] = {}
 
@@ -203,6 +226,10 @@ class TrainingReporter:
     def record_test_fold(self, fold: int, metrics: dict) -> None:
         self.test_metrics.append({"fold": fold, **metrics})
         self._save_test_csv()
+
+    def record_val_best_fold(self, fold: int, epoch: int, metrics: dict) -> None:
+        self.val_best_metrics.append({"fold": fold, "epoch": epoch, **metrics})
+        self._save_val_best_csv()
 
     def record_fold_duration(self, fold: int, duration_seconds: float) -> None:
         self.fold_durations[fold] = duration_seconds
@@ -328,6 +355,19 @@ class TrainingReporter:
                 row = {col: entry.get(col, "") for col in self.TEST_METRIC_COLUMNS}
                 # Use 1-based fold label for readability
                 row["fold"] = f"fold_{int(entry['fold']) + 1}"
+                writer.writerow(row)
+
+    # Save, per fold, the validation metrics at the epoch early stopping selected
+    # as best — the same checkpoint used for test evaluation.
+    def _save_val_best_csv(self) -> None:
+        path = os.path.join(self.run_dir, "val_best_metrics.csv")
+        with open(path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=self.VAL_BEST_METRIC_COLUMNS)
+            writer.writeheader()
+            for entry in self.val_best_metrics:
+                row = {col: entry.get(col, "") for col in self.VAL_BEST_METRIC_COLUMNS}
+                row["fold"] = f"fold_{int(entry['fold']) + 1}"
+                row["epoch"] = int(entry["epoch"]) + 1
                 writer.writerow(row)
 
     # Save per-fold training durations to a single CSV, with one row per fold.
