@@ -111,13 +111,14 @@ class Cli:
         # Params always included in the name
         parts = [
             f"epochs{args.num_epochs}",
-            f"augment{args.augment_factor}",
+            f"es{args.early_stopping}" if args.early_stopping is not None else "esNone",
         ]
 
         # Params included only when non-default
         non_default_params = [
+            ("augment_factor",      0,     "augment"),
             ("kfolds",              5,     "k"),
-            ("learning_rate",       0.01,  "lr"),
+            ("learning_rate",       0.005,  "lr"),
             ("dme_threshold",       0.5,   "dme"),
             ("first_layer_channels",128,   "fl"),
             ("hidden_channels",     64,    "hc"),
@@ -129,8 +130,7 @@ class Cli:
             ("activation",          "relu","act"),
             ("pooling",             "mean","pool"),
             ("residual",            False, "res"),
-            ("rm_semantic_fusion",  False, "nosf"),
-            ("early_stopping",      None,  "es"),
+            ("rm_semantic_fusion",  True, "sf"),
             ("random_seed",         42,    "seed"),
             ("test_split",          0.15,  "ts"),
             ("rep_dim",             64,    "rd"),
@@ -151,6 +151,11 @@ class Cli:
         return "train_" + "_".join(parts)
 
     def cli():
+        def _int_or_none(value: str):
+            if value.lower() in ("none", "off", "0"):
+                return None
+            return int(value)
+        
         parser = argparse.ArgumentParser(description="Bridge Defender CLI")
         subparsers = parser.add_subparsers(
             title="Actions", description="Available actions", dest="action"
@@ -253,9 +258,9 @@ class Cli:
         )
         training_parser.add_argument(
             "--early-stopping",
-            type=int,
-            default=None,
-            help="Whether to use early stopping based on validation loss, and the patience value (default: None)",
+            type=_int_or_none,
+            default=15,
+            help="Whether to use early stopping based on validation loss, and the patience value (default: 15, disable with 'none' or 0)",
         )
         training_parser.add_argument(
             "--dme-threshold",
@@ -274,8 +279,8 @@ class Cli:
         training_parser.add_argument(
             "--learning-rate",
             type=float,
-            default=0.01,
-            help="Learning rate for the optimizer (default: 0.01)",
+            default=0.005,
+            help="Learning rate for the optimizer (default: 0.005)",
         )
         training_parser.add_argument(
             "--rep-dim",
@@ -391,9 +396,11 @@ class Cli:
         )
         training_parser.add_argument(
             "--rm-semantic-fusion",
-            action="store_true",
+            action=argparse.BooleanOptionalAction,
+            default=True,
             help="Ablation: if used, removes the Semantic Fusion Transformer from SeHGNN and "
-                 "passes the feature projection output directly to the pooling step",
+                 "passes the feature projection output directly to the pooling step (default: enabled; "
+                 "use --no-rm-semantic-fusion to keep the transformer)",
         )
         training_parser.add_argument(
             "--augment-factor",
