@@ -181,7 +181,8 @@ usage: main.py train [-h] [--tags TAGS] --dataset {mixed,single,cctx} (--load-da
                      [--hidden-channels HIDDEN_CHANNELS] [--dropout DROPOUT]
                      [--input-drop INPUT_DROP] [--att-drop ATT_DROP] [--n-fp-layers N_FP_LAYERS]
                      [--n-mlp-layers N_MLP_LAYERS] [--activation {relu,leaky_relu,sigmoid,none}]
-                     [--residual] [--pooling {mean,max,sum,mean_max}] [--rm-semantic-fusion]
+                     [--residual] [--pooling {mean,max,sum,mean_max}]
+                     [--rm-semantic-fusion | --no-rm-semantic-fusion]
                      [--augment-factor AUGMENT_FACTOR] [--random-seed RANDOM_SEED]
 
 options:
@@ -204,7 +205,7 @@ options:
                         Number of training epochs per fold (default: 100)
   --early-stopping EARLY_STOPPING
                         Whether to use early stopping based on validation loss, and the patience
-                        value (default: None)
+                        value (default: 15, disable with 'none' or 0)
   --dme-threshold DME_THRESHOLD
                         Threshold for the Differential Meta-Path Extraction (default: 0.5)
   --test-split TEST_SPLIT
@@ -212,7 +213,7 @@ options:
                         0.15). Set to 0 to use the entire dataset for training/K-fold validation
                         and skip test-set evaluation entirely.
   --learning-rate LEARNING_RATE
-                        Learning rate for the optimizer (default: 0.01)
+                        Learning rate for the optimizer (default: 0.005)
   --device {cpu,cuda}   Device to use for training (default: 'cuda' if available, otherwise 'cpu')
   --first-layer-channels FIRST_LAYER_CHANNELS
                         Number of channels in the first layer of SeHGNNConv (default: 128)
@@ -233,8 +234,10 @@ options:
   --pooling {mean,max,sum,mean_max}
                         Pooling method to use for aggregating node embeddings into type-level
                         embeddings (default: mean)
-  --rm-semantic-fusion  Ablation: if used, removes the Semantic Fusion Transformer from SeHGNN and
+  --rm-semantic-fusion, --no-rm-semantic-fusion
+                        Ablation: if used, removes the Semantic Fusion Transformer from SeHGNN and
                         passes the feature projection output directly to the pooling step
+                        (default: enabled; use --no-rm-semantic-fusion to keep the transformer)
   --augment-factor AUGMENT_FACTOR
                         Number of augmented copies per anomaly graph generated at training time (0
                         = disabled, default: 0)
@@ -256,6 +259,15 @@ Each training run creates a folder of the format
 | `fold_durations.csv`                          | Training time per fold                                                             |
 | `confusion_matrices/`                         | Confusion matrices for each fold, overall and per bridge                           |
 | `models/fold_<k>.pt`                          | Fold checkpoints, used by `eval` and `time-infer`                                  |
+
+>[!WARNING] IMPORTANT!
+>**Default argument deviations used in the paper's experiments:**
+>
+>For BridgeSentry-C:
+>
+>- *Single-chain scope:* Use the `single` dataset type, specifying the new or current set with `--new-dataset` or `--load-data`. Unless stated in other experiments, the other default arguments are used.
+>- *Cross-chain scope:* Use the `cctx` dataset type, specifying the new or current set with `--new-dataset` or `--load-data`. **Learning rate should be set to 0.002 (`--learning-rate 0.002`).** Unless stated in other experiments, the other default arguments are used.
+
 
 ### `eval`: evaluate trained checkpoints
 
