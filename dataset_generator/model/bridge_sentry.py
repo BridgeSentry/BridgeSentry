@@ -13,7 +13,7 @@ from dataset_generator.types import EdgeMetapath
 HEAD_NEGATIVE_SLOPE = 0.1
 
 
-class BridgeDefender(nn.Module):
+class BridgeSentry(nn.Module):
     def __init__(
             self,
             metapath_feature_sizes: dict[EdgeMetapath, int],
@@ -31,7 +31,7 @@ class BridgeDefender(nn.Module):
             pooling: str = 'mean',
             rm_semantic_fusion: bool = False,
     ):
-        super(BridgeDefender, self).__init__()
+        super(BridgeSentry, self).__init__()
         self.convs = nn.ModuleDict({})
         self.pooling = pooling
         self.hidden_channels = hidden_channels

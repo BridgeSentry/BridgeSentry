@@ -19,7 +19,7 @@ from collections import defaultdict
 from typing import DefaultDict
 from dataset_generator.early_stopping import EarlyStopping
 from dataset_generator.feature_extraction import AMOUNTS_INDEX, ARGS_NUM_INDEX, IN_DEGREE_INDEX, INPUT_SIZE_INDEX, OUT_DEGREE_INDEX
-from dataset_generator.model.bridge_defender import BridgeDefender
+from dataset_generator.model.bridge_sentry import BridgeSentry
 from dataset_generator.model.deep_sad import (
     DEFAULT_EPS,
     deep_sad_loss,
@@ -564,7 +564,7 @@ def train(tags: str, dataset_type: DATASET_TYPE, dataset_path: str, force_reload
         for real_idx in train_idx:
             extra_syn.extend(source_to_synthetic_idx.get(int(real_idx), []))
         train_idx = list(train_idx) + extra_syn
-        model = BridgeDefender(
+        model = BridgeSentry(
             metapath_feature_sizes=all_feature_sizes,
             node_types=dataset[0].node_types,
             **model_kwargs,
@@ -799,7 +799,7 @@ def train(tags: str, dataset_type: DATASET_TYPE, dataset_path: str, force_reload
         fold_metrics = []
 
         for fold_idx, model_state, fold_threshold in fold_model_states:
-            fold_model = BridgeDefender(
+            fold_model = BridgeSentry(
                 metapath_feature_sizes=all_feature_sizes,
                 node_types=dataset[0].node_types,
                 **model_kwargs,
