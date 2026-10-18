@@ -8,7 +8,7 @@ from torch_geometric.nn import global_mean_pool, global_max_pool, global_add_poo
 from dataset_generator.model.sehgnn_conv import SeHGNN
 from dataset_generator.types import EdgeMetapath
 
-class BridgeDefender(nn.Module):
+class BridgeSentry(nn.Module):
     def __init__(
             self,
             metapath_feature_sizes: dict[EdgeMetapath, int],
@@ -26,7 +26,7 @@ class BridgeDefender(nn.Module):
             pooling: str = 'mean',
             rm_semantic_fusion: bool = False,
     ):
-        super(BridgeDefender, self).__init__()
+        super(BridgeSentry, self).__init__()
         self.convs = nn.ModuleDict({})
         self.pooling = pooling
         self.hidden_channels = hidden_channels

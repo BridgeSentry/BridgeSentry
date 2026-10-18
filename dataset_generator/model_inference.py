@@ -2,7 +2,7 @@ import torch
 from torch_geometric.data import Batch, HeteroData
 from torch_geometric.loader import DataLoader
 
-from dataset_generator.model.bridge_defender import BridgeDefender
+from dataset_generator.model.bridge_sentry import BridgeSentry
 from dataset_generator.model_training import aggregate_metapath_features, apply_normalization
 
 
@@ -11,9 +11,9 @@ def load_checkpoint(path: str, device: str | torch.device = "cpu") -> dict:
     return torch.load(path, map_location=device)
 
 
-def build_model_from_checkpoint(checkpoint: dict, device: str | torch.device = "cpu") -> BridgeDefender:
+def build_model_from_checkpoint(checkpoint: dict, device: str | torch.device = "cpu") -> BridgeSentry:
     """Reconstruct a fold's BridgeDefender model from a checkpoint and load its weights."""
-    model = BridgeDefender(
+    model = BridgeSentry(
         metapath_feature_sizes=checkpoint["metapath_feature_sizes"],
         node_types=checkpoint["node_types"],
         **checkpoint["model_kwargs"],
@@ -40,7 +40,7 @@ def prepare_graphs(graphs: list[HeteroData], checkpoint: dict) -> list[HeteroDat
 
 @torch.no_grad()
 def predict(
-    model: BridgeDefender,
+    model: BridgeSentry,
     graphs: list[HeteroData],
     checkpoint: dict,
     device: str | torch.device = "cpu",
